@@ -8,6 +8,12 @@ A clean-room, decentralized personal cognitive agent inspired by the Sigma cogni
 * **Zero trust.** Each skill is signed with Ed25519 over a BLAKE3 digest of its canonical (postcard) encoding. Inbound skills pass a bounded read (4 MB max), a reputation gate, bounds checks and signature checks before they are compiled. Peer reputation starts at 0.5 (1.0 for your own devices) and moves with reward. Authors below 0.25 are quarantined, and their skills are evicted and not restored after a restart.
 * **Offline first.** Identity, reputation, predicates and skills (with learned weights) live in `sigma_memory.redb`.
 
+## Sigma capabilities
+
+* **Conditionals with variables (skill format v2).** A v2 skill is a `Program`: symbolic types, predicates with typed arguments (`Mounted(device)`), and conditionals made of patterns whose arguments are constants or variables. Each pattern is a *condition* (read only), *condact* (both ways) or *action* (write only), and the conditional's function spans the patterns' values and, optionally, some variables (`function_vars`). The engine grounds each conditional over its variables into factors that share the function; a ground atom is named `Mounted(nas)`. It is still pure data, and grounding is bounded (`MAX_GROUNDINGS`).
+* **Formats on the wire.** v1 table skills are unchanged: the same bytes, signatures, ALPN and storage rows. v2 skills travel as a new `OfferSkillV2` message that older nodes reject as malformed and ignore, and are signed under a separate BLAKE3 derive-key context (`sigma-skill v2`), so a signature can never be replayed across formats. `Skill` wraps both formats.
+* **Decision cycle.** Elaboration runs message passing to quiescence, then the decision phase selects an action or reports a `DecisionImpasse`: **none** (no candidate), **tie** (candidates within `TIE_MARGIN`; the engine reflects with a one-step lookahead per candidate and selects the winner if one stands out) or **no-change** (the same action again with working memory unchanged; the action stays selected and `cycles` counts up). Structural impasses (a missing skill) are still broadcast to peers.
+
 ```
 crates/sigma-core     engine, crypto, redb storage (+ unit tests a–e)
 crates/sigma-net      iroh endpoint + gossip, skill-exchange ALPN (+ 3-node test)

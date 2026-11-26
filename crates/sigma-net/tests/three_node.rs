@@ -4,7 +4,10 @@
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
 use iroh::{Endpoint, RelayMode};
-use sigma_core::{FactorStore, NodeIdentity, PredicateRole::*, PredicateSchema, SigmaEngine, SkillPackage};
+use sigma_core::{
+    Conditional, FactorStore, NodeIdentity, Pattern, PatternKind, PredicateDef, PredicateRole::*, PredicateSchema,
+    Program, SigmaEngine, Skill, SkillPackage, Term,
+};
 use sigma_net::{EndpointId, SkillMeshNode};
 use std::sync::Arc;
 use std::time::Duration;
@@ -117,6 +120,41 @@ async fn requester_composes_skills_from_two_peers() {
     assert_eq!(engine.cognitive_cycle().selected_action.as_deref(), Some("ActionSyncFiles"));
 
     for n in [a, b, c] {
+        n.shutdown().await.unwrap();
+    }
+}
+
+/// A format-v2 conditional skill (with a variable) travels the same impasse -> offer path.
+#[tokio::test(flavor = "multi_thread")]
+async fn conditional_skill_crosses_the_mesh() {
+    let lookup = MemoryLookup::new();
+    let (mut a, _) = node(&lookup, vec![]).await;
+    let (b, b_id) = node(&lookup, vec![a.node_id()]).await;
+    let d = || vec![Term::Var("d".into())];
+    let pred = |name: &str, role| PredicateDef { name: name.into(), role, args: vec!["room".into()], value_type: None };
+    let program = Program {
+        types: vec![sigma_core::TypeDef { name: "room".into(), values: vec!["kitchen".into(), "office".into()] }],
+        predicates: vec![pred("Tidy", Goal), pred("Vacuum", Action)],
+        conditionals: vec![Conditional {
+            name: "tidy-by-vacuuming".into(),
+            patterns: vec![
+                Pattern { kind: PatternKind::Condition, predicate: "Tidy".into(), args: d() },
+                Pattern { kind: PatternKind::Action, predicate: "Vacuum".into(), args: d() },
+            ],
+            function_vars: vec![],
+            function: vec![1.0, 1.0, 1.0, 10.0],
+        }],
+    };
+    let mut skill = Skill::program("tidy-rooms", 1, program);
+    b_id.sign(&mut skill);
+    b.publish_local_skill(skill).unwrap();
+    wait_for("gossip neighbor", || a.neighbor_count() >= 1).await;
+
+    let mut engine = SigmaEngine::new();
+    engine.push_goal("Tidy(office)");
+    resolve_impasse(&mut a, &mut engine, "tidy-rooms").await;
+    assert_eq!(engine.cognitive_cycle().selected_action.as_deref(), Some("Vacuum(office)"));
+    for n in [a, b] {
         n.shutdown().await.unwrap();
     }
 }

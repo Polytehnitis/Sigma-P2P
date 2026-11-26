@@ -5,7 +5,12 @@ fn bin(name: &str, role: PredicateRole) -> PredicateSchema {
     PredicateSchema::binary(name, role)
 }
 
-fn signed(id: &NodeIdentity, name: &str, predicates: Vec<PredicateSchema>, factor_values: Vec<f32>) -> SkillPackage {
+pub(crate) fn signed(
+    id: &NodeIdentity,
+    name: &str,
+    predicates: Vec<PredicateSchema>,
+    factor_values: Vec<f32>,
+) -> SkillPackage {
     let mut skill = SkillPackage {
         skill_name: name.into(),
         version: 1,
@@ -21,13 +26,13 @@ fn signed(id: &NodeIdentity, name: &str, predicates: Vec<PredicateSchema>, facto
 
 /// Skill 1: to back up, the NAS must be mounted (subgoal); mount it if it is not.
 /// Table over (GoalBackup, SubgoalMountNAS, ActionMountNAS), row-major.
-fn skill_backup(id: &NodeIdentity) -> SkillPackage {
+pub(crate) fn skill_backup(id: &NodeIdentity) -> SkillPackage {
     let preds = vec![bin("GoalBackup", Goal), bin("SubgoalMountNAS", Subgoal), bin("ActionMountNAS", Action)];
     signed(id, "backup-needs-nas", preds, vec![1.0, 1.0, 1.0, 1.0, 0.1, 5.0, 10.0, 2.0])
 }
 
 /// Skill 2: once the NAS is mounted, sync the files. Table over (SubgoalMountNAS, ActionSyncFiles).
-fn skill_sync(id: &NodeIdentity) -> SkillPackage {
+pub(crate) fn skill_sync(id: &NodeIdentity) -> SkillPackage {
     let preds = vec![bin("SubgoalMountNAS", Subgoal), bin("ActionSyncFiles", Action)];
     signed(id, "sync-on-mounted-nas", preds, vec![5.0, 0.1, 1.0, 10.0])
 }
