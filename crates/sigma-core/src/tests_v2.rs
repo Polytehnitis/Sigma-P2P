@@ -17,7 +17,14 @@ fn pred(name: &str, role: PredicateRole, args: &[&str]) -> PredicateDef {
 }
 
 fn cond(name: &str, patterns: Vec<Pattern>, function: Vec<f32>) -> Conditional {
-    Conditional { name: name.into(), patterns, function_vars: vec![], function, learnable: false, normal: None }
+    Conditional {
+        name: name.into(),
+        patterns,
+        function_vars: vec![],
+        function: Function::Table(function),
+        learnable: false,
+        normal: None,
+    }
 }
 
 pub(crate) fn signed_program(id: &NodeIdentity, name: &str, program: Program) -> Skill {
@@ -30,7 +37,7 @@ pub(crate) fn signed_program(id: &NodeIdentity, name: &str, program: Program) ->
 pub(crate) fn device_backup_program() -> Program {
     let d = || vec![var("d")];
     Program {
-        types: vec![TypeDef { name: "device".into(), values: vec!["nas".into(), "usb".into()] }],
+        types: vec![TypeDef::symbolic("device", &["nas", "usb"])],
         predicates: vec![
             pred("Backup", Goal, &["device"]),
             pred("Mounted", Subgoal, &["device"]),
@@ -69,7 +76,7 @@ fn v2_grounds_signs_and_rejects_tampering() {
 
     let mut tampered = skill.clone();
     let SkillBody::Program(p) = &mut tampered.body else { unreachable!() };
-    p.conditionals[0].function[5] = 9.0;
+    p.conditionals[0].function = Function::Table(vec![1.0; 8]);
     assert_eq!(tampered.validate(), Err("signature verification failed"));
 
     // A v1 package converted to `Skill` keeps its v1 signature.
@@ -86,7 +93,7 @@ fn v2_grounds_signs_and_rejects_tampering() {
     bad.predicates[0].name = "Backup(x)".into();
     assert_eq!(signed_program(&id, "bad", bad).validate(), Err("invalid predicate name"));
     let mut bad = device_backup_program();
-    bad.conditionals[1].function.pop();
+    bad.conditionals[1].function = Function::Table(vec![1.0; 3]);
     assert_eq!(signed_program(&id, "bad", bad).validate(), Err("function length does not match conditional"));
 }
 
@@ -133,13 +140,13 @@ fn condition_and_action_patterns_are_one_way() {
 fn function_variables_give_each_binding_its_own_slice() {
     let id = NodeIdentity::generate();
     let program = Program {
-        types: vec![TypeDef { name: "device".into(), values: vec!["nas".into(), "usb".into()] }],
+        types: vec![TypeDef::symbolic("device", &["nas", "usb"])],
         predicates: vec![pred("Backup", Goal, &[]), pred("Use", Action, &["device"])],
         conditionals: vec![Conditional {
             name: "prefer".into(),
             patterns: vec![pat(Condition, "Backup", vec![]), pat(PatternKind::Action, "Use", vec![var("d")])],
             function_vars: vec!["d".into()],
-            function: vec![1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 8.0],
+            function: Function::Table(vec![1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 8.0]),
             learnable: false,
             normal: None,
         }],

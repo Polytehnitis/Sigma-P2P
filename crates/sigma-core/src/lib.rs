@@ -21,7 +21,10 @@ use std::sync::Arc;
 
 pub use crypto::NodeIdentity;
 pub use memory::{Episode, EpisodicMemory, SemanticMemory, SemanticRecall};
-pub use program::{Conditional, Pattern, PatternKind, PredicateDef, Program, Skill, SkillBody, Term, TypeDef};
+pub use program::{
+    Conditional, Function, Pattern, PatternKind, Piece, PredicateDef, Program, Skill, SkillBody, Term, TypeDef,
+    TypeKind,
+};
 pub use storage::FactorStore;
 
 /// Largest factor value a skill may carry.
@@ -115,6 +118,8 @@ impl SkillPackage {
 pub struct VariableNode {
     pub schema: PredicateSchema,
     pub evidence: Option<usize>,
+    /// `[lo, hi)` for a continuous value, split into `domain_size` equal regions.
+    pub range: Option<(f32, f32)>,
 }
 
 /// One (ground) factor. A v1 skill compiles to one; a v2 skill to one per conditional binding.
@@ -181,6 +186,20 @@ pub struct CycleOutcome {
     pub decision_impasse: Option<DecisionImpasse>,
 }
 
+/// A particle message over a continuous predicate: weighted samples of its value.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Particles {
+    pub values: Vec<f32>,
+    pub weights: Vec<f32>,
+}
+
+impl Particles {
+    pub fn mean(&self) -> f32 {
+        let z: f32 = self.weights.iter().sum();
+        self.values.iter().zip(&self.weights).map(|(x, w)| x * w).sum::<f32>() / z
+    }
+}
+
 /// Factors and marginals of the last decision, kept for reinforcement.
 #[derive(Debug, Default)]
 struct Trace {
@@ -203,6 +222,8 @@ pub struct SigmaEngine {
     index: HashMap<String, usize>,
     factors: Vec<FactorNode>,
     skills: Vec<Arc<Skill>>,
+    /// Initial flat weights of each skill.
+    initial: HashMap<String, Vec<f32>>,
     pub goal_stack: Vec<String>,
     trace: Option<Trace>,
     last: Option<LastDecision>,
@@ -237,7 +258,7 @@ impl SigmaEngine {
             Some(&v) if self.vars[v].schema != *p => Err("predicate schema conflict"),
             Some(&v) => Ok(v),
             None => {
-                self.vars.push(VariableNode { schema: p.clone(), evidence: None });
+                self.vars.push(VariableNode { schema: p.clone(), evidence: None, range: None });
                 self.index.insert(p.name.clone(), self.vars.len() - 1);
                 Ok(self.vars.len() - 1)
             }
@@ -251,7 +272,12 @@ impl SigmaEngine {
         skill.validate()?;
         let grounding = skill.grounding()?;
         let conflict = |p: &PredicateSchema| self.index.get(&p.name).is_some_and(|&v| self.vars[v].schema != *p);
-        if grounding.atoms.iter().chain(grounding.factors.iter().flat_map(|f| &f.predicates)).any(conflict) {
+        let range_conflict = |(n, lo, hi): &(String, f32, f32)| {
+            self.index.get(n).is_some_and(|&v| self.vars[v].range.is_some_and(|r| r != (*lo, *hi)))
+        };
+        if grounding.atoms.iter().chain(grounding.factors.iter().flat_map(|f| &f.predicates)).any(conflict)
+            || grounding.ranges.iter().any(range_conflict)
+        {
             return Err("predicate schema conflict");
         }
         if self.skill(&skill.skill_name).is_some_and(|old| old.version > skill.version) {
@@ -261,6 +287,10 @@ impl SigmaEngine {
         for p in &grounding.atoms {
             self.register_predicate(p)?;
         }
+        for (n, lo, hi) in &grounding.ranges {
+            self.vars[self.index[n]].range = Some((*lo, *hi));
+        }
+        self.initial.insert(skill.skill_name.clone(), grounding.weights);
         let skill = Arc::new(skill);
         for g in grounding.factors {
             let vars = g.predicates.iter().map(|p| self.register_predicate(p)).collect::<Result<_, _>>()?;
@@ -285,8 +315,8 @@ impl SigmaEngine {
 
     /// Replaces a compiled skill's live (learned) flat weights after bounds checks.
     pub fn apply_weights(&mut self, skill_name: &str, weights: &[f32]) -> bool {
-        let Some(skill) = self.skill(skill_name) else { return false };
-        let ok = weights.len() == skill.weights().len()
+        let Some(init) = self.initial.get(skill_name) else { return false };
+        let ok = weights.len() == init.len()
             && weights.iter().all(|w| w.is_finite() && (0.0..=MAX_FACTOR_VALUE).contains(w));
         if ok {
             for f in self.factors.iter_mut().filter(|f| f.skill.skill_name == skill_name) {
@@ -299,7 +329,7 @@ impl SigmaEngine {
 
     /// A skill's live flat weights (v2: every conditional function, concatenated).
     pub fn skill_weights(&self, skill_name: &str) -> Option<Vec<f32>> {
-        let init = self.skill(skill_name)?.weights();
+        let init = self.initial.get(skill_name)?.clone();
         let (mut sum, mut count) = (vec![0.0; init.len()], vec![0u32; init.len()]);
         for f in self.factors.iter().filter(|f| f.skill.skill_name == skill_name) {
             for (i, w) in f.table.iter().enumerate() {
@@ -345,6 +375,84 @@ impl SigmaEngine {
         }
         self.percepts.insert(v, normalize(distribution.to_vec()));
         Ok(())
+    }
+
+    /// The region of continuous predicate `name` that contains `x` (clamped to the range).
+    pub fn region_of(&self, name: &str, x: f32) -> Result<usize, &'static str> {
+        let v = &self.vars[*self.index.get(name).ok_or("unknown predicate")?];
+        let (lo, hi) = v.range.ok_or("not a continuous predicate")?;
+        if !x.is_finite() {
+            return Err("value is not finite");
+        }
+        let bins = v.schema.domain_size;
+        Ok((((x - lo) / (hi - lo) * bins as f32).floor().max(0.0) as usize).min(bins - 1))
+    }
+
+    /// Sets a continuous predicate to the region containing `x`.
+    pub fn set_value(&mut self, name: &str, x: f32) -> Result<(), &'static str> {
+        let r = self.region_of(name, x)?;
+        self.set_evidence(name, r)
+    }
+
+    /// Perceives a noisy continuous reading: a normal percept centred on `x`.
+    pub fn perceive_value(&mut self, name: &str, x: f32, std: f32) -> Result<(), &'static str> {
+        let centres = self.centres(name)?;
+        if !(x.is_finite() && std.is_finite() && std > 0.0) {
+            return Err("invalid reading");
+        }
+        let dist: Vec<f32> = centres.iter().map(|c| (-0.5 * ((c - x) / std).powi(2)).exp()).collect();
+        self.perceive(name, &dist)
+    }
+
+    /// Perceives a particle message (weighted samples), projected onto the regions.
+    pub fn perceive_particles(&mut self, name: &str, particles: &Particles) -> Result<(), &'static str> {
+        let mut dist = vec![0.0; self.centres(name)?.len()];
+        for (&x, &w) in particles.values.iter().zip(&particles.weights) {
+            if w.is_finite() && w > 0.0 {
+                dist[self.region_of(name, x)?] += w;
+            }
+        }
+        self.perceive(name, &dist)
+    }
+
+    /// Posterior of `name` given working memory alone (no goal assumptions).
+    pub fn posterior(&self, name: &str) -> Option<Vec<f32>> {
+        let v = *self.index.get(name)?;
+        Some(self.infer(|_| None).swap_remove(v))
+    }
+
+    /// Posterior mean of a continuous predicate.
+    pub fn expected_value(&self, name: &str) -> Option<f32> {
+        let centres = self.centres(name).ok()?;
+        Some(self.posterior(name)?.iter().zip(&centres).map(|(p, c)| p * c).sum())
+    }
+
+    /// Draws a particle message from the posterior of a continuous predicate: a region by its
+    /// probability, then a uniform point inside it. Equal weights.
+    pub fn sample_particles(&self, name: &str, n: usize, rng: &mut impl rand::Rng) -> Option<Particles> {
+        let v = &self.vars[*self.index.get(name)?];
+        let (lo, hi) = v.range?;
+        let post = self.posterior(name)?;
+        let width = (hi - lo) / post.len() as f32;
+        let values = (0..n)
+            .map(|_| {
+                let mut u: f32 = rng.gen();
+                let r = post.iter().position(|p| {
+                    u -= p;
+                    u < 0.0
+                });
+                let r = r.unwrap_or(post.len() - 1);
+                lo + (r as f32 + rng.gen::<f32>()) * width
+            })
+            .collect();
+        Some(Particles { values, weights: vec![1.0 / n.max(1) as f32; n] })
+    }
+
+    fn centres(&self, name: &str) -> Result<Vec<f32>, &'static str> {
+        let v = &self.vars[*self.index.get(name).ok_or("unknown predicate")?];
+        let (lo, hi) = v.range.ok_or("not a continuous predicate")?;
+        let w = (hi - lo) / v.schema.domain_size as f32;
+        Ok((0..v.schema.domain_size).map(|i| lo + (i as f32 + 0.5) * w).collect())
     }
 
     /// Drains the motor buffer: every action selected since the last call, oldest first.
@@ -741,6 +849,7 @@ impl SigmaEngine {
     fn remove_skill(&mut self, skill_name: &str) {
         self.factors.retain(|f| f.skill.skill_name != skill_name);
         self.skills.retain(|s| s.skill_name != skill_name);
+        self.initial.remove(skill_name);
     }
 
     fn satisfied(&self, v: usize) -> bool {
@@ -867,6 +976,8 @@ pub(crate) fn normalize(mut v: Vec<f32>) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_continuous;
 #[cfg(test)]
 mod tests_learning;
 #[cfg(test)]
