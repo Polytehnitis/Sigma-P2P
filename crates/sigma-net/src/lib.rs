@@ -3,6 +3,11 @@
 //! Impasses are broadcast on a gossip topic derived from the swarm passphrase. Any peer
 //! holding a skill that mentions the missing predicate dials the requester directly and
 //! offers the signed package; the requester verifies it before it ever reaches the engine.
+//!
+//! The user's own paired devices additionally keep their private state in sync over direct,
+//! end-to-end encrypted connections (see [`sync`]); none of it is ever gossiped.
+
+pub mod sync;
 
 use anyhow::{Context, Result};
 use iroh::endpoint::{presets, Builder, Connection};
@@ -11,7 +16,7 @@ use iroh::{Endpoint, SecretKey};
 use iroh_gossip::{Event, Gossip, GossipSender, TopicId};
 use n0_future::StreamExt;
 use serde::{Deserialize, Serialize};
-use sigma_core::{FactorStore, ImpasseEvent, Skill, SkillPackage, QUARANTINE};
+use sigma_core::{FactorStore, ImpasseEvent, Skill, SkillPackage, SyncReport, QUARANTINE};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -60,8 +65,13 @@ pub struct SkillMeshNode {
     local_skills: SkillIndex,
     neighbors: Arc<AtomicUsize>,
     listener: tokio::task::JoinHandle<()>,
+    device_sync: sync::DeviceSync,
+    sync_loop: tokio::task::JoinHandle<()>,
     /// Verified skills pushed to us by peers.
     pub downloaded_skills: mpsc::Receiver<Skill>,
+    /// What each sync with a paired device changed in the store (apply with
+    /// `FactorStore::refresh_engine`).
+    pub synced: mpsc::UnboundedReceiver<SyncReport>,
 }
 
 impl SkillMeshNode {
@@ -86,10 +96,20 @@ impl SkillMeshNode {
         let endpoint = builder.secret_key(SecretKey::from_bytes(&identity.to_bytes())).bind().await?;
         let gossip = Gossip::builder().spawn(endpoint.clone());
         let (tx, downloaded_skills) = mpsc::channel(64);
+        let (device_sync, synced) = sync::DeviceSync::new(endpoint.id(), store.clone());
         let router = Router::builder(endpoint.clone())
             .accept(iroh_gossip::ALPN, gossip.clone())
             .accept(SKILL_EXCHANGE_ALPN, SkillExchange { store: store.clone(), tx })
+            .accept(sync::DEVICE_SYNC_ALPN, device_sync.clone())
+            .accept(sync::PAIRING_ALPN, sync::Pairing(device_sync.clone()))
             .spawn();
+        let (ds, ep) = (device_sync.clone(), endpoint.clone());
+        let sync_loop = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(sync::SYNC_INTERVAL).await;
+                ds.sync_all(&ep).await;
+            }
+        });
 
         let topic = TopicId::from_bytes(*blake3::hash(format!("sigma-swarm/{swarm_passphrase}").as_bytes()).as_bytes());
         let (sender, mut receiver) = gossip.subscribe(topic, bootstrap_peers).await?.split();
@@ -117,7 +137,18 @@ impl SkillMeshNode {
                 }
             }
         });
-        Ok(Self { endpoint, router, sender, local_skills, neighbors, listener, downloaded_skills })
+        Ok(Self {
+            endpoint,
+            router,
+            sender,
+            local_skills,
+            neighbors,
+            listener,
+            device_sync,
+            sync_loop,
+            downloaded_skills,
+            synced,
+        })
     }
 
     pub fn node_id(&self) -> EndpointId {
@@ -152,8 +183,31 @@ impl SkillMeshNode {
         Ok(())
     }
 
+    /// A single-use code (valid for [`sync::PAIRING_TTL`]) another of the user's devices can
+    /// pass to [`pair`](Self::pair) to join this one.
+    pub fn pairing_code(&self) -> String {
+        self.device_sync.pairing_code()
+    }
+
+    /// Pairs with the device that issued `code` and runs a first sync. Returns its id.
+    pub async fn pair(&self, code: &str) -> Result<EndpointId> {
+        self.device_sync.pair(&self.endpoint, code).await
+    }
+
+    /// Syncs private state with one paired device now.
+    pub async fn sync_with(&self, device: EndpointId) -> Result<()> {
+        self.device_sync.sync_with(&self.endpoint, device).await
+    }
+
+    /// Syncs with every reachable paired device now (this also runs every
+    /// [`sync::SYNC_INTERVAL`]). Returns how many were reached.
+    pub async fn sync_now(&self) -> usize {
+        self.device_sync.sync_all(&self.endpoint).await
+    }
+
     pub async fn shutdown(self) -> Result<()> {
         self.listener.abort();
+        self.sync_loop.abort();
         self.router.shutdown().await?;
         Ok(())
     }

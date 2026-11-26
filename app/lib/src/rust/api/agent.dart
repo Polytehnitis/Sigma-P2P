@@ -50,6 +50,28 @@ Future<String> teachAndShareSkill({
 Future<void> trustPeerAuthor({required String hexPubkey}) =>
     RustLib.instance.api.crateApiAgentTrustPeerAuthor(hexPubkey: hexPubkey);
 
+/// A single-use code (valid 10 minutes) that another of the user's devices can pair with.
+Future<String> createPairingCode() =>
+    RustLib.instance.api.crateApiAgentCreatePairingCode();
+
+/// Pairs with the device that showed `code` and syncs with it. Returns its author pubkey hex.
+/// From then on memories, reputations, learned weights and goals stay in sync, end-to-end
+/// encrypted and only between paired devices.
+Future<String> pairDevice({required String code}) =>
+    RustLib.instance.api.crateApiAgentPairDevice(code: code);
+
+/// Syncs with every reachable paired device now (this also happens every 30 s).
+/// Returns how many were reached.
+Future<int> syncNow() => RustLib.instance.api.crateApiAgentSyncNow();
+
+/// Author pubkeys (hex) of the user's other paired devices.
+Future<List<String>> pairedDevices() =>
+    RustLib.instance.api.crateApiAgentPairedDevices();
+
+/// Unpairs a device on all of the user's devices; it stops receiving private state.
+Future<void> unpairDevice({required String hexPubkey}) =>
+    RustLib.instance.api.crateApiAgentUnpairDevice(hexPubkey: hexPubkey);
+
 class AgentInfo {
   final String endpointId;
   final String authorPubkey;

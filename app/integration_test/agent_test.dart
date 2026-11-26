@@ -18,14 +18,20 @@ void main() {
     );
     expect(info.authorPubkey, hasLength(64));
 
-    var step = await runCognitiveStep(evidence: const [], activeGoals: ['GoalTidyDesk']);
+    var step = await runCognitiveStep(
+      evidence: const [],
+      activeGoals: ['GoalTidyDesk'],
+    );
     expect(step.impasse, 'GoalTidyDesk');
     expect(step.selectedAction, isNull);
 
-    await teachAndShareSkill(skillName: 'tidy', predicates: [
-      PredicateDemo(name: 'GoalTidyDesk', role: Role.goal, value: 1),
-      PredicateDemo(name: 'ActionSortPapers', role: Role.action, value: 1),
-    ]);
+    await teachAndShareSkill(
+      skillName: 'tidy',
+      predicates: [
+        PredicateDemo(name: 'GoalTidyDesk', role: Role.goal, value: 1),
+        PredicateDemo(name: 'ActionSortPapers', role: Role.action, value: 1),
+      ],
+    );
     step = await runCognitiveStep(evidence: const [], activeGoals: const []);
     expect(step.goalStack, ['GoalTidyDesk']);
     expect(step.selectedAction, 'ActionSortPapers');
@@ -35,5 +41,16 @@ void main() {
     final fb = await provideFeedback(reward: 1);
     expect(fb.evictedSkills, isEmpty);
     expect(fb.reputations.single.reputation, 1.0);
+
+    // Multi-device sync surface: no paired devices yet, nothing to reach.
+    expect(await pairedDevices(), isEmpty);
+    expect(await syncNow(), 0);
+    final code = await createPairingCode();
+    expect(code, startsWith('sigma-pair:${info.endpointId}:'));
+    await expectLater(pairDevice(code: code), throwsA(anything));
+    await expectLater(pairDevice(code: 'not-a-code'), throwsA(anything));
+    // Errors come back as exceptions and the app keeps running.
+    await expectLater(trustPeerAuthor(hexPubkey: 'zz'), throwsA(anything));
+    expect(await pairedDevices(), isEmpty);
   });
 }

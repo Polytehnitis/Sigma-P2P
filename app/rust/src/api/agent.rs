@@ -104,17 +104,29 @@ pub fn init_agent(storage_dir: String, swarm_passphrase: String, bootstrap_peers
     let identity = store.load_or_create_identity().map_err(err)?;
     let mut engine = SigmaEngine::new();
     let restored = store.restore_engine(&mut engine).map_err(err)?;
+    engine.goal_stack = store.load_goal_stack().map_err(err)?;
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     let mut node = rt.block_on(SkillMeshNode::spawn(&swarm_passphrase, peers, store.clone()))?;
     for skill in &restored {
         node.publish_local_skill(skill.clone())?;
     }
     let mut downloads = std::mem::replace(&mut node.downloaded_skills, tokio::sync::mpsc::channel(1).1);
+    let mut synced = std::mem::replace(&mut node.synced, tokio::sync::mpsc::unbounded_channel().1);
     let (engine, node) = (Arc::new(Mutex::new(engine)), Arc::new(node));
     let (e, n, s) = (engine.clone(), node.clone(), store.clone());
     rt.spawn(async move {
         while let Some(skill) = downloads.recv().await {
             if e.lock().unwrap().compile_skill(skill.clone()).is_ok() && s.save_skill(&skill).is_ok() {
+                let _ = n.publish_local_skill(skill);
+            }
+        }
+    });
+    // Changes synced from the user's other devices go straight into the live engine.
+    let (e, n, s) = (engine.clone(), node.clone(), store.clone());
+    rt.spawn(async move {
+        while let Some(report) = synced.recv().await {
+            let compiled = s.refresh_engine(&mut e.lock().unwrap(), &report).unwrap_or_default();
+            for skill in compiled {
                 let _ = n.publish_local_skill(skill);
             }
         }
@@ -147,7 +159,11 @@ pub fn run_cognitive_step(evidence: Vec<Evidence>, active_goals: Vec<String>) ->
         for goal in active_goals.iter().filter(|g| !g.trim().is_empty()) {
             engine.push_goal(goal.trim());
         }
-        engine.cognitive_cycle()
+        let out = engine.cognitive_cycle();
+        // Persisted every step so paired devices see the latest memories and goals.
+        a.store.save_memories(&engine).map_err(err)?;
+        a.store.save_goal_stack(&engine.goal_stack).map_err(err)?;
+        out
     };
     if let Some(impasse) = out.impasse.clone() {
         let node = a.node.clone();
@@ -227,7 +243,46 @@ pub fn trust_peer_author(hex_pubkey: String) -> Result<()> {
     agent()?.store.set_trusted_peer(&key).map_err(err)
 }
 
+/// A single-use code (valid 10 minutes) that another of the user's devices can pair with.
+pub fn create_pairing_code() -> Result<String> {
+    Ok(agent()?.node.pairing_code())
+}
+
+/// Pairs with the device that showed `code` and syncs with it. Returns its author pubkey hex.
+/// From then on memories, reputations, learned weights and goals stay in sync, end-to-end
+/// encrypted and only between paired devices.
+pub fn pair_device(code: String) -> Result<String> {
+    let a = agent()?;
+    let device = a.rt.block_on(a.node.pair(&code))?;
+    Ok(crypto::to_hex(device.as_bytes()))
+}
+
+/// Syncs with every reachable paired device now (this also happens every 30 s).
+/// Returns how many were reached.
+pub fn sync_now() -> Result<u32> {
+    let a = agent()?;
+    Ok(a.rt.block_on(a.node.sync_now()) as u32)
+}
+
+/// Author pubkeys (hex) of the user's other paired devices.
+pub fn paired_devices() -> Result<Vec<String>> {
+    Ok(agent()?.store.paired_devices().map_err(err)?.iter().map(|d| crypto::to_hex(d)).collect())
+}
+
+/// Unpairs a device on all of the user's devices; it stops receiving private state.
+pub fn unpair_device(hex_pubkey: String) -> Result<()> {
+    let key = crypto::pubkey_from_hex(&hex_pubkey).map_err(err)?;
+    agent()?.store.unpair_device(&key).map_err(err)
+}
+
 #[flutter_rust_bridge::frb(init)]
 pub fn init_app() {
+    // flutter_rust_bridge turns on RUST_BACKTRACE, so every returned `anyhow::Error` would
+    // capture a backtrace. On Linux the unwinder resolves to the copy bundled in
+    // libflutter_linux_gtk.so, which segfaults walking these frames: any FFI error (a bad
+    // pairing code, a malformed pubkey) killed the app. Panics keep their backtraces.
+    if std::env::var_os("RUST_LIB_BACKTRACE").is_none() {
+        std::env::set_var("RUST_LIB_BACKTRACE", "0");
+    }
     flutter_rust_bridge::setup_default_user_utils();
 }

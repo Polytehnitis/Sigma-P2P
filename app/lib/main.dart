@@ -39,7 +39,9 @@ class _AgentPageState extends State<AgentPage> {
   final _trust = TextEditingController();
   final _goal = TextEditingController(text: 'GoalBackup');
   final _evidence = TextEditingController();
+  final _pairCode = TextEditingController();
   AgentInfo? _info;
+  List<String> _devices = const [];
   CognitiveStep? _step;
   bool _busy = false;
 
@@ -67,8 +69,73 @@ class _AgentPageState extends State<AgentPage> {
       swarmPassphrase: _swarm.text,
       bootstrapPeers: [_peer.text],
     );
-    setState(() => _info = info);
+    final devices = await pairedDevices();
+    setState(() {
+      _info = info;
+      _devices = devices;
+    });
     _toast('Agent online, ${info.restoredSkills} skill(s) restored');
+  });
+
+  Future<void> _showPairingCode() => _guard(() async {
+    final code = await createPairingCode();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Pair another device'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          spacing: 8,
+          children: [
+            const Text(
+              'Enter this code on your other device within 10 minutes. '
+              'It works once.',
+            ),
+            SelectableText(
+              code,
+              style: const TextStyle(fontFamily: 'monospace'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () => Clipboard.setData(ClipboardData(text: code)),
+            icon: const Icon(Icons.copy),
+            label: const Text('Copy'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Done'),
+          ),
+        ],
+      ),
+    );
+    final devices = await pairedDevices();
+    setState(() => _devices = devices);
+  });
+
+  Future<void> _pair() => _guard(() async {
+    final device = await pairDevice(code: _pairCode.text);
+    _pairCode.clear();
+    final devices = await pairedDevices();
+    setState(() => _devices = devices);
+    _toast('Paired with ${_short(device)} and synced');
+  });
+
+  Future<void> _syncNow() => _guard(() async {
+    final reached = await syncNow();
+    final devices = await pairedDevices();
+    setState(() => _devices = devices);
+    _toast('Synced with $reached of ${devices.length} device(s)');
+  });
+
+  Future<void> _unpair(String hex) => _guard(() async {
+    await unpairDevice(hexPubkey: hex);
+    final devices = await pairedDevices();
+    setState(() => _devices = devices);
+    _toast('Unpaired ${_short(hex)}');
   });
 
   Future<void> _run() => _guard(() async {
@@ -169,6 +236,57 @@ class _AgentPageState extends State<AgentPage> {
               ),
             ],
           ]),
+          if (_info != null)
+            _section('My devices', [
+              const Text(
+                'Paired devices keep memories, reputations, learned weights '
+                'and goals in sync, end-to-end encrypted. Nothing private '
+                'goes to the swarm.',
+              ),
+              for (final d in _devices)
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.devices),
+                  title: Text(
+                    _short(d),
+                    style: const TextStyle(fontFamily: 'monospace'),
+                  ),
+                  trailing: IconButton(
+                    tooltip: 'Unpair',
+                    onPressed: _busy ? null : () => _unpair(d),
+                    icon: const Icon(Icons.link_off),
+                  ),
+                ),
+              if (_devices.isEmpty) const Text('No paired devices yet'),
+              Row(
+                children: [
+                  Expanded(
+                    child: _field(_pairCode, 'Pairing code from my device'),
+                  ),
+                  IconButton(
+                    tooltip: 'Pair',
+                    onPressed: _busy ? null : _pair,
+                    icon: const Icon(Icons.add_link),
+                  ),
+                ],
+              ),
+              Wrap(
+                spacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _busy ? null : _showPairingCode,
+                    icon: const Icon(Icons.qr_code),
+                    label: const Text('Show pairing code'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _busy ? null : _syncNow,
+                    icon: const Icon(Icons.sync),
+                    label: const Text('Sync now'),
+                  ),
+                ],
+              ),
+            ]),
           if (_info != null)
             _section('Goal', [
               _field(_goal, 'Top-level goal'),

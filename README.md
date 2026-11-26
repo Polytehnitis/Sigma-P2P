@@ -7,6 +7,7 @@ A clean-room, decentralized personal cognitive agent inspired by the Sigma cogni
 * **Structural impasses.** If a chain dead-ends at an open (sub)goal with no skill leading on to an action, `detect_structural_impasse` names that predicate. The node broadcasts it over `iroh-gossip`, and peers that hold a matching skill push it back over QUIC.
 * **Zero trust.** Each skill is signed with Ed25519 over a BLAKE3 digest of its canonical (postcard) encoding. Inbound skills pass a bounded read (4 MB max), a reputation gate, bounds checks and signature checks before they are compiled. Peer reputation starts at 0.5 (1.0 for your own devices) and moves with reward. Authors below 0.25 are quarantined, and their skills are evicted and not restored after a restart.
 * **Offline first.** Identity, reputation, predicates and skills (with learned weights) live in `sigma_memory.redb`.
+* **Private multi-device sync.** Your paired devices (phone, PC, NAS) keep episodic and semantic memories, reputations, skills with their learned weights, predicates and the goal stack in sync. See [Multi-device sync](#multi-device-sync).
 
 ## Sigma capabilities
 
@@ -32,7 +33,7 @@ A clean-room, decentralized personal cognitive agent inspired by the Sigma cogni
 
 ```
 crates/sigma-core     engine, crypto, redb storage (+ unit tests a–e)
-crates/sigma-net      iroh endpoint + gossip, skill-exchange ALPN (+ 3-node test)
+crates/sigma-net      iroh endpoint + gossip, skill-exchange, pairing and device-sync ALPNs (+ 3-node and device-sync tests)
 crates/sigma-daemon   headless CLI for PC / server / NAS
 app/                  Flutter client; app/rust is the flutter_rust_bridge crate
 ```
@@ -68,6 +69,26 @@ cargo run --release -p sigma-daemon -- \
 ```
 
 `--bootstrap-peer` and `--trust-author` can be repeated. Stop the daemon with Ctrl+C. Run it under systemd, launchd or a NAS container to keep it online around the clock. It uses n0's public relays and DNS discovery (`presets::N0`) for NAT traversal. All traffic is end-to-end encrypted QUIC.
+
+## Multi-device sync
+
+Pair once, then your devices stay in sync on their own:
+
+```sh
+# On the NAS (always on):
+cargo run --release -p sigma-daemon -- --data-dir ~/.local/share/sigma --swarm "my-family-swarm" --invite
+#   Pairing code:        sigma-pair:<EndpointId>:<secret>
+# On the PC (or paste the code into the app's "My devices" card):
+cargo run --release -p sigma-daemon -- --data-dir ./sigma-data --swarm "my-family-swarm" --pair <code>
+```
+
+* **Pairing.** A code is single use and expires after 10 minutes. The joining device dials the one that issued it, and both prove they know the secret, bound to both device identities, before either records the other as paired (and as fully trusted, reputation 1.0). The paired-device list itself syncs, so a phone paired with the PC is also paired with the NAS the PC already knew. `--unpair <hex>` (or the app's unlink button) revokes a device on all your devices.
+* **Only between your devices.** Private state never goes on the gossip swarm. It travels only over direct iroh connections on `/sigma/device-sync/1`. Those are QUIC + TLS 1.3 keyed by each device's Ed25519 identity, so they are end-to-end encrypted (relays only see ciphertext) and mutually authenticated. Each side serves a sync only when the TLS-proven peer identity is one of its paired devices. Skills that arrive this way are validated again before anything compiles them.
+* **Conflict-free merging.** Each device's state is one CRDT (`sigma_core::sync::SyncState`) with a join that is commutative, associative and idempotent, so devices converge whatever the order in which they meet:
+  * Reputations, skills with their learned weights, predicates, the goal stack and the paired-device set are last-writer-wins registers, stamped with a hybrid logical clock and the writing device. A deleted skill or unpaired device leaves a tombstone.
+  * Episodic memory merges as the union of both replicas, keeping the newest 1024 episodes. Episodes carry Lamport timestamps, so the merged memory orders sensibly. Of two copies of one episode, the one with the reward wins.
+  * Semantic memory merges count by count, keeping the larger count. Re-syncing never double-counts. If two devices learn the same concept while they are apart, the larger tally is kept.
+* **Offline first.** Every node syncs with each paired device every 30 s and on demand (`SkillMeshNode::sync_now`, the app's "Sync now"). An unreachable device is skipped, and it catches up the next time either side syncs.
 
 ## Run the app (desktop and mobile)
 
