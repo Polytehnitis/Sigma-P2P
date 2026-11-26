@@ -37,8 +37,12 @@ fn insulation(bins: usize) -> SigmaEngine {
 fn particles_resolve_what_coarse_regions_cannot() {
     let mut engine = insulation(4);
     engine.set_value("Outside", 22.0).unwrap();
+    engine.tabulate_continuous = true;
     let grid = engine.expected_value("Inside").unwrap();
     assert!((grid - 16.0).abs() > 0.7, "four 10-degree regions blur the answer: {grid}");
+    engine.tabulate_continuous = false;
+    let exact = engine.expected_value("Inside").unwrap();
+    assert!((exact - 16.0).abs() < 0.05, "piecewise-linear messages do not: {exact}");
 
     engine.particle_count = Some(128);
     let belief = engine.particle_belief("Inside").unwrap();
@@ -114,7 +118,10 @@ fn particle_decisions_use_exact_values() {
     engine.compile_skill(signed_program(&NodeIdentity::generate(), "thermostat", program)).unwrap();
     engine.push_goal("Comfort");
     engine.set_value("Temp", 14.0).unwrap();
+    engine.tabulate_continuous = true;
     assert_eq!(engine.cognitive_cycle().selected_action.as_deref(), Some("Heater"), "grid: region midpoint 12.5");
+    engine.tabulate_continuous = false;
+    assert_eq!(engine.cognitive_cycle().selected_action, None, "exact: the piece ends at 13");
     engine.particle_count = Some(64);
     assert_eq!(engine.cognitive_cycle().selected_action, None, "particles: exactly 14");
     engine.set_value("Temp", 9.0).unwrap();

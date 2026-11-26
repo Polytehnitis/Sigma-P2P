@@ -11,10 +11,12 @@
 
 pub mod actions;
 pub mod crypto;
+mod exact;
 pub mod language;
 pub mod memory;
 pub mod mind;
 pub mod particles;
+pub mod plm;
 pub mod program;
 pub mod storage;
 pub mod sync;
@@ -29,6 +31,7 @@ pub use crypto::NodeIdentity;
 pub use language::{Intent, Interpretation, PhraseBook, Route};
 pub use memory::{Episode, EpisodicMemory, SemanticMemory, SemanticRecall};
 pub use mind::{Appraisal, Emotion, MindModel, OtherAgent};
+pub use plm::Plm;
 pub use program::{
     Conditional, Function, Pattern, PatternKind, Piece, PredicateDef, Program, Skill, SkillBody, Term, TypeDef,
     TypeKind,
@@ -48,7 +51,7 @@ const DEMO_WEIGHT: f32 = 10.0;
 const MIN_WEIGHT: f32 = 1e-3;
 /// Message passing runs to quiescence (largest message change below `BP_TOLERANCE`),
 /// for at most `BP_ITERS` sweeps.
-const BP_ITERS: usize = 50;
+pub(crate) const BP_ITERS: usize = 50;
 const BP_TOLERANCE: f32 = 1e-5;
 /// Candidate actions whose posteriors differ by less than this are tied.
 pub const TIE_MARGIN: f32 = 0.02;
@@ -263,6 +266,10 @@ pub struct SigmaEngine {
     pub particle_count: Option<usize>,
     /// Seed for particle sampling, so inference is reproducible for a given state.
     pub particle_seed: u64,
+    /// Solve continuous variables on the fixed region grid (functions tabulated at region
+    /// midpoints) instead of exactly with piecewise-linear functions (the default; see
+    /// [`plm`]). Particles, when `particle_count` is set, take precedence over both.
+    pub tabulate_continuous: bool,
     /// Exact values behind continuous evidence (`set_value`).
     exact: HashMap<usize, f32>,
     /// Particle messages in the perception buffer.
@@ -476,6 +483,12 @@ impl SigmaEngine {
     pub fn expected_value(&self, name: &str) -> Option<f32> {
         if self.particle_count.is_some() {
             return self.particle_belief(name).map(|p| p.mean());
+        }
+        let v = *self.index.get(name)?;
+        if self.vars[v].range.is_some() {
+            if let Some(mean) = self.exact_mean(v) {
+                return Some(mean);
+            }
         }
         let centres = self.centres(name).ok()?;
         Some(self.posterior(name)?.iter().zip(&centres).map(|(p, c)| p * c).sum())
@@ -860,7 +873,8 @@ impl SigmaEngine {
     /// (a likelihood proxy that rises as the functions fit the data).
     pub fn learn_gradient(&mut self, rate: f32) -> f32 {
         let rate = if rate.is_finite() { rate.clamp(0.0, 1.0) } else { 0.0 };
-        let (prior, msgs) = self.propagate(|_| None);
+        let exact = self.exact_state(&|_| None);
+        let (prior, msgs) = if exact.is_some() { (Vec::new(), Vec::new()) } else { self.propagate(|_| None) };
         let mut log_z = 0.0;
         let mut touched = HashSet::new();
         for fi in 0..self.factors.len() {
@@ -871,7 +885,10 @@ impl SigmaEngine {
                 .vars
                 .iter()
                 .enumerate()
-                .map(|(s, &v)| self.belief(v, &prior, &msgs, Some((fi, s))))
+                .map(|(s, &v)| match &exact {
+                    Some(state) => state.grid_belief(self, v, Some((fi, s))),
+                    None => self.belief(v, &prior, &msgs, Some((fi, s))),
+                })
                 .collect();
             let f = &mut self.factors[fi];
             let groups = |idx: &[usize]| -> usize {
@@ -1014,6 +1031,9 @@ impl SigmaEngine {
                 return beliefs;
             }
         }
+        if let Some(beliefs) = self.infer_exact(&clamp) {
+            return beliefs;
+        }
         let (prior, msgs) = self.propagate(clamp);
         (0..self.vars.len()).map(|v| self.belief(v, &prior, &msgs, None)).collect()
     }
@@ -1125,6 +1145,8 @@ mod tests;
 mod tests_actions;
 #[cfg(test)]
 mod tests_continuous;
+#[cfg(test)]
+mod tests_exact;
 #[cfg(test)]
 mod tests_language;
 #[cfg(test)]
