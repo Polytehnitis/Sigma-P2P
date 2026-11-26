@@ -11,6 +11,8 @@ const PREDICATES: TableDefinition<&str, &[u8]> = TableDefinition::new("predicate
 const SKILLS: TableDefinition<&str, &[u8]> = TableDefinition::new("skills");
 /// skill_name -> postcard((Skill, live learned weights)) for format v2 skills.
 const SKILLS_V2: TableDefinition<&str, &[u8]> = TableDefinition::new("skills_v2");
+/// "episodic" / "semantic" -> postcard of that long-term memory.
+const MEMORIES: TableDefinition<&str, &[u8]> = TableDefinition::new("memories");
 
 /// Default reputation of an unknown author.
 pub const DEFAULT_REPUTATION: f32 = 0.5;
@@ -32,6 +34,7 @@ impl FactorStore {
             tx.open_table(PREDICATES)?;
             tx.open_table(SKILLS)?;
             tx.open_table(SKILLS_V2)?;
+            tx.open_table(MEMORIES)?;
             Ok(())
         })?;
         Ok(store)
@@ -122,7 +125,19 @@ impl FactorStore {
         })
     }
 
-    /// Hydrates `engine` on boot. Skips quarantined authors and anything failing
+    /// Persists the engine's episodic and semantic memories.
+    pub fn save_memories(&self, engine: &SigmaEngine) -> StoreResult<()> {
+        let episodic = postcard::to_allocvec(&engine.episodic)?;
+        let semantic = postcard::to_allocvec(&engine.semantic)?;
+        self.write(|tx| {
+            let mut t = tx.open_table(MEMORIES)?;
+            t.insert("episodic", episodic.as_slice())?;
+            t.insert("semantic", semantic.as_slice())?;
+            Ok(())
+        })
+    }
+
+    /// Hydrates `engine` on boot (memories included). Skips quarantined authors and anything failing
     /// `validate()`; returns the skills that were restored.
     pub fn restore_engine(&self, engine: &mut SigmaEngine) -> StoreResult<Vec<Skill>> {
         let tx = self.db.begin_read()?;
@@ -131,6 +146,13 @@ impl FactorStore {
             let _ = engine.register_predicate(&p);
         }
         let mut restored = Vec::new();
+        let memories = tx.open_table(MEMORIES)?;
+        if let Some(g) = memories.get("episodic")? {
+            engine.episodic = postcard::from_bytes(g.value())?;
+        }
+        if let Some(g) = memories.get("semantic")? {
+            engine.semantic = postcard::from_bytes(g.value())?;
+        }
         let mut rows = Vec::new();
         for row in tx.open_table(SKILLS)?.iter()? {
             rows.push(decode_skill(row?.1.value(), 1)?);

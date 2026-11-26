@@ -192,6 +192,7 @@ pub fn provide_feedback(reward: f32) -> Result<FeedbackResult> {
             let _ = a.store.save_skill_weights(&skill.skill_name, &w);
         }
     }
+    a.store.save_memories(&engine).map_err(err)?;
     let evicted = engine
         .evict_skills(|f| f.utility_score < QUARANTINE || a.store.get_peer_reputation(&f.author_pubkey) < QUARANTINE);
     for skill in &evicted {

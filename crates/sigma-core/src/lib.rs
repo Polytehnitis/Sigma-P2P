@@ -10,6 +10,7 @@
 //! (closed world) when choosing an action.
 
 pub mod crypto;
+pub mod memory;
 pub mod program;
 pub mod storage;
 
@@ -19,6 +20,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 pub use crypto::NodeIdentity;
+pub use memory::{Episode, EpisodicMemory, SemanticMemory, SemanticRecall};
 pub use program::{Conditional, Pattern, PatternKind, PredicateDef, Program, Skill, SkillBody, Term, TypeDef};
 pub use storage::FactorStore;
 
@@ -200,6 +202,12 @@ pub struct SigmaEngine {
     pub goal_stack: Vec<String>,
     trace: Option<Trace>,
     last: Option<LastDecision>,
+    /// Perception buffer: soft evidence that lasts one decision cycle.
+    percepts: HashMap<usize, Vec<f32>>,
+    /// Motor buffer: selected actions not yet taken by an actuator.
+    motor: Vec<String>,
+    pub episodic: EpisodicMemory,
+    pub semantic: SemanticMemory,
 }
 
 impl SigmaEngine {
@@ -320,6 +328,51 @@ impl SigmaEngine {
         }
     }
 
+    /// Puts a (possibly uncertain) percept in the perception buffer for the next cycle.
+    pub fn perceive(&mut self, name: &str, distribution: &[f32]) -> Result<(), &'static str> {
+        let v = *self.index.get(name).ok_or("unknown predicate")?;
+        if distribution.len() != self.vars[v].schema.domain_size
+            || !distribution.iter().all(|p| p.is_finite() && *p >= 0.0)
+            || distribution.iter().sum::<f32>() <= 0.0
+        {
+            return Err("invalid percept distribution");
+        }
+        self.percepts.insert(v, normalize(distribution.to_vec()));
+        Ok(())
+    }
+
+    /// Drains the motor buffer: every action selected since the last call, oldest first.
+    pub fn take_motor_commands(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.motor)
+    }
+
+    /// Working memory as `(predicate, value)`: evidence, then the most likely value of each percept.
+    pub fn working_memory(&self) -> Vec<(String, usize)> {
+        let mut wm: Vec<(String, usize)> =
+            self.vars.iter().filter_map(|n| n.evidence.map(|x| (n.schema.name.clone(), x))).collect();
+        for (&v, p) in &self.percepts {
+            if self.vars[v].evidence.is_none() {
+                let x = p.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map_or(0, |m| m.0);
+                wm.push((self.vars[v].schema.name.clone(), x));
+            }
+        }
+        wm.sort();
+        wm
+    }
+
+    /// Semantic memory joins elaboration: features it predicts for the current object, for
+    /// predicates without evidence or percepts, enter the perception buffer.
+    fn complete_from_semantic_memory(&mut self) {
+        let Some(recall) = self.semantic.recall(&self.working_memory()) else { return };
+        for (feature, dist) in recall.predicted {
+            if let Some(&v) = self.index.get(&feature) {
+                if self.vars[v].evidence.is_none() && dist.len() == self.vars[v].schema.domain_size {
+                    self.percepts.entry(v).or_insert(dist);
+                }
+            }
+        }
+    }
+
     /// Pushes a top-level goal (registering it as a binary `Goal` predicate if unknown).
     pub fn push_goal(&mut self, name: &str) {
         if !self.index.contains_key(name) {
@@ -346,8 +399,10 @@ impl SigmaEngine {
         let Some(root) = self.goal_stack.first().and_then(|g| self.index.get(g)).copied() else {
             self.trace = None;
             self.last = None;
+            self.percepts.clear();
             return CycleOutcome::default();
         };
+        self.complete_from_semantic_memory();
         let stacked_goals: HashSet<usize> = self
             .goal_stack
             .iter()
@@ -388,7 +443,11 @@ impl SigmaEngine {
 
         // Decision.
         let (selected, mut impasse) = match tied.len() {
-            0 => (None, Some((ImpasseKind::None, Vec::new(), false))),
+            // None impasse: fall back on a rewarded action from a similar episode.
+            0 => match self.recall_action() {
+                Some(a) => (Some(a), Some((ImpasseKind::None, vec![a], true))),
+                None => (None, Some((ImpasseKind::None, Vec::new(), false))),
+            },
             1 => (Some(tied[0]), None),
             _ => {
                 // Tie impasse: reflect by looking one step ahead with each candidate.
@@ -454,7 +513,19 @@ impl SigmaEngine {
             decision_impasse,
         };
         self.trace = Some(Trace { factors: active, marginals });
+        self.episodic.record(self.goal_stack.clone(), self.working_memory(), outcome.selected_action.clone());
+        self.motor.extend(outcome.selected_action.clone());
+        self.percepts.clear();
         outcome
+    }
+
+    /// The action of the best-matching past episode that was rewarded, if it is still one of
+    /// this node's actions.
+    fn recall_action(&self) -> Option<usize> {
+        let is_action = |a: &str| self.index.get(a).filter(|&&v| self.vars[v].schema.role == PredicateRole::Action);
+        let ok = |e: &Episode| e.reward > 0.0 && e.action.as_deref().is_some_and(|a| is_action(a).is_some());
+        let recall = self.episodic.recall(&self.goal_stack, &self.working_memory(), ok)?;
+        is_action(recall.episode.action.as_deref()?).copied()
     }
 
     /// Reflection inside a tie impasse: how likely is `top` to hold if `action` is taken
@@ -522,6 +593,7 @@ impl SigmaEngine {
     /// each entry is scaled by `exp(reward · Π marginals)`. Returns per-factor author attributions.
     pub fn reinforce_factors(&mut self, reward: f32) -> Vec<([u8; 32], f32)> {
         let reward = if reward.is_finite() { reward.clamp(-1.0, 1.0) } else { 0.0 };
+        self.episodic.reward_last(reward);
         let Some(trace) = self.trace.as_ref() else { return Vec::new() };
         let mut attributions = Vec::new();
         let mut touched = HashSet::new();
@@ -630,8 +702,15 @@ impl SigmaEngine {
     /// evidence. A `Condition` slot never receives messages from its factor, and an `Action`
     /// slot never sends any into it.
     fn infer(&self, clamp: impl Fn(usize) -> Option<usize>) -> Vec<Vec<f32>> {
-        let fixed: Vec<Option<usize>> =
-            (0..self.vars.len()).map(|v| self.vars[v].evidence.or_else(|| clamp(v))).collect();
+        let fixed: Vec<Vec<f32>> = (0..self.vars.len())
+            .map(|v| {
+                let d = self.vars[v].schema.domain_size;
+                match self.vars[v].evidence.or_else(|| clamp(v)) {
+                    Some(x) => one_hot(x, d),
+                    None => self.percepts.get(&v).cloned().unwrap_or_else(|| vec![1.0; d]),
+                }
+            })
+            .collect();
         let uniform = |v: usize| normalize(vec![1.0; self.vars[v].schema.domain_size]);
         let mut msgs: Vec<Vec<Vec<f32>>> =
             self.factors.iter().map(|f| f.vars.iter().map(|&v| uniform(v)).collect()).collect();
@@ -679,15 +758,8 @@ impl SigmaEngine {
         (0..self.vars.len()).map(|v| self.belief(v, &fixed, &msgs, None)).collect()
     }
 
-    fn belief(
-        &self,
-        v: usize,
-        fixed: &[Option<usize>],
-        msgs: &[Vec<Vec<f32>>],
-        skip: Option<(usize, usize)>,
-    ) -> Vec<f32> {
-        let d = self.vars[v].schema.domain_size;
-        let mut b = fixed[v].map_or_else(|| vec![1.0; d], |x| one_hot(x, d));
+    fn belief(&self, v: usize, prior: &[Vec<f32>], msgs: &[Vec<Vec<f32>>], skip: Option<(usize, usize)>) -> Vec<f32> {
+        let mut b = prior[v].clone();
         for (fi, f) in self.factors.iter().enumerate() {
             for (s, _) in f.vars.iter().enumerate().filter(|&(s, &u)| u == v && skip != Some((fi, s))) {
                 b.iter_mut().zip(&msgs[fi][s]).for_each(|(x, m)| *x *= m);
@@ -701,7 +773,7 @@ fn one_hot(x: usize, d: usize) -> Vec<f32> {
     (0..d).map(|i| if i == x { 1.0 } else { 0.0 }).collect()
 }
 
-fn normalize(mut v: Vec<f32>) -> Vec<f32> {
+pub(crate) fn normalize(mut v: Vec<f32>) -> Vec<f32> {
     let sum: f32 = v.iter().sum();
     if sum > 0.0 && sum.is_finite() {
         v.iter_mut().for_each(|x| *x /= sum);
@@ -714,5 +786,7 @@ fn normalize(mut v: Vec<f32>) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_memory;
 #[cfg(test)]
 mod tests_v2;
