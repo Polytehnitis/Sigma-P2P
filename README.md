@@ -20,7 +20,10 @@ app/                  Flutter client; app/rust is the flutter_rust_bridge crate
 ```sh
 cargo test --workspace          # sigma-core unit tests + 3-node P2P composition test
 cargo clippy --workspace --all-targets
+cargo test -p sigma-net --test public_relay -- --ignored   # needs internet: real n0 relays + DNS discovery
 ```
+
+CI (`.github/workflows/ci.yml`) runs the Rust tests on Linux, macOS and Windows, runs the public-relay test, and builds the app for Linux (plus the FFI integration test), Android, Windows, macOS and iOS.
 
 ## Run the daemon (PC, home server, NAS)
 
