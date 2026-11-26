@@ -11,6 +11,7 @@
 
 pub mod actions;
 pub mod crypto;
+pub mod demos;
 mod exact;
 pub mod graph_memory;
 pub mod language;
@@ -162,6 +163,19 @@ pub struct FactorNode {
     pub analytic: Option<Arc<program::Analytic>>,
     /// Compiled from a memory or a learned model (see [`graph_memory`]), not from a skill.
     pub memory: bool,
+    /// Where each table entry (row-major) sits in the skill's flat weights, when the entries
+    /// are not one contiguous run from `offset` (a pattern padded by an affine transform).
+    pub layout: Option<Arc<Vec<usize>>>,
+}
+
+impl FactorNode {
+    /// Position of table entry `i` (row-major) in the skill's flat weights.
+    pub fn weight_index(&self, i: usize) -> usize {
+        match &self.layout {
+            Some(l) => l[i],
+            None => self.offset + i,
+        }
+    }
 }
 
 /// A broken chain: `missing_predicate` (reached from `goal`) has no skill linking it to an action.
@@ -381,6 +395,7 @@ impl SigmaEngine {
                 normal: g.normal,
                 analytic: g.analytic,
                 memory: false,
+                layout: g.layout.map(Arc::new),
             });
         }
         self.skills.push(skill);
@@ -397,8 +412,8 @@ impl SigmaEngine {
             && weights.iter().all(|w| w.is_finite() && (0.0..=MAX_FACTOR_VALUE).contains(w));
         if ok {
             for f in self.factors.iter_mut().filter(|f| f.skill.skill_name == skill_name) {
-                let n = f.table.len();
-                f.table.iter_mut().zip(&weights[f.offset..f.offset + n]).for_each(|(t, w)| *t = *w);
+                let at: Vec<usize> = (0..f.table.len()).map(|i| f.weight_index(i)).collect();
+                f.table.iter_mut().zip(at).for_each(|(t, i)| *t = weights[i]);
             }
         }
         ok
@@ -410,8 +425,8 @@ impl SigmaEngine {
         let (mut sum, mut count) = (vec![0.0; init.len()], vec![0u32; init.len()]);
         for f in self.factors.iter().filter(|f| f.skill.skill_name == skill_name) {
             for (i, w) in f.table.iter().enumerate() {
-                sum[f.offset + i] += w;
-                count[f.offset + i] += 1;
+                sum[f.weight_index(i)] += w;
+                count[f.weight_index(i)] += 1;
             }
         }
         Some(init.into_iter().zip(sum).zip(count).map(|((w, s), c)| if c == 0 { w } else { s / c as f32 }).collect())
@@ -1118,6 +1133,8 @@ pub(crate) fn normalize(mut v: Vec<f32>) -> Vec<f32> {
 mod tests;
 #[cfg(test)]
 mod tests_actions;
+#[cfg(test)]
+mod tests_affine;
 #[cfg(test)]
 mod tests_continuous;
 #[cfg(test)]

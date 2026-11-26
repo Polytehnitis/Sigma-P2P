@@ -246,7 +246,7 @@ impl SigmaEngine {
             .table
             .iter()
             .enumerate()
-            .map(|(i, &w)| match init.get(f.offset + i) {
+            .map(|(i, &w)| match init.get(f.weight_index(i)) {
                 Some(&i0) if i0 > 0.0 => w as f64 / i0 as f64,
                 _ => 1.0,
             })

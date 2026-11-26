@@ -117,6 +117,7 @@ impl Builder {
             normal,
             analytic: None,
             memory: true,
+            layout: None,
         });
         self.weights.extend(values);
     }
