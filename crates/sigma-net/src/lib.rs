@@ -11,7 +11,7 @@ use iroh::{Endpoint, SecretKey};
 use iroh_gossip::{Event, Gossip, GossipSender, TopicId};
 use n0_future::StreamExt;
 use serde::{Deserialize, Serialize};
-use sigma_core::{FactorStore, ImpasseEvent, SkillPackage, QUARANTINE};
+use sigma_core::{FactorStore, ImpasseEvent, Skill, SkillPackage, QUARANTINE};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -32,14 +32,26 @@ pub struct GossipImpasseQuery {
     pub nonce: u64,
 }
 
-/// Sent over a direct QUIC stream on `SKILL_EXCHANGE_ALPN`.
+/// Sent over a direct QUIC stream on `SKILL_EXCHANGE_ALPN`. v1 skills always travel as
+/// `OfferSkill`, byte-identical to older nodes. Older nodes reject `OfferSkillV2` as
+/// malformed and carry on.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum DirectSkillMessage {
     OfferSkill(SkillPackage),
+    OfferSkillV2(Skill),
 }
 
-/// Local skills offered to the swarm, keyed by sorted predicate signature.
-type SkillIndex = Arc<Mutex<BTreeMap<String, SkillPackage>>>;
+impl From<Skill> for DirectSkillMessage {
+    fn from(skill: Skill) -> Self {
+        match skill.as_v1() {
+            Some(v1) => Self::OfferSkill(v1),
+            None => Self::OfferSkillV2(skill),
+        }
+    }
+}
+
+/// Local skills offered to the swarm, keyed by `Skill::signature_key`.
+type SkillIndex = Arc<Mutex<BTreeMap<String, Skill>>>;
 
 pub struct SkillMeshNode {
     endpoint: Endpoint,
@@ -49,7 +61,7 @@ pub struct SkillMeshNode {
     neighbors: Arc<AtomicUsize>,
     listener: tokio::task::JoinHandle<()>,
     /// Verified skills pushed to us by peers.
-    pub downloaded_skills: mpsc::Receiver<SkillPackage>,
+    pub downloaded_skills: mpsc::Receiver<Skill>,
 }
 
 impl SkillMeshNode {
@@ -122,7 +134,8 @@ impl SkillMeshNode {
     }
 
     /// Offers a (validated) skill to peers that hit a matching impasse.
-    pub fn publish_local_skill(&self, skill: SkillPackage) -> Result<()> {
+    pub fn publish_local_skill(&self, skill: impl Into<Skill>) -> Result<()> {
+        let skill = skill.into();
         skill.validate().map_err(anyhow::Error::msg)?;
         let mut skills = self.local_skills.lock().expect("skill index poisoned");
         let key = skill.signature_key();
@@ -146,18 +159,18 @@ impl SkillMeshNode {
     }
 }
 
-fn matching_skills(skills: &SkillIndex, predicate: &str) -> Vec<SkillPackage> {
+fn matching_skills(skills: &SkillIndex, predicate: &str) -> Vec<Skill> {
     let skills = skills.lock().expect("skill index poisoned");
-    skills.iter().filter(|(key, _)| key.split(',').any(|p| p == predicate)).map(|(_, s)| s.clone()).collect()
+    skills.values().filter(|s| s.mentions(predicate)).cloned().collect()
 }
 
 /// Dials the requester over QUIC and pushes each skill on its own stream.
-async fn offer_skills(endpoint: Endpoint, to: EndpointId, skills: Vec<SkillPackage>) {
+async fn offer_skills(endpoint: Endpoint, to: EndpointId, skills: Vec<Skill>) {
     let push = async {
         let conn = endpoint.connect(to, SKILL_EXCHANGE_ALPN).await?;
         for skill in skills {
             let (mut send, mut recv) = conn.open_bi().await?;
-            send.write_all(&postcard::to_allocvec(&DirectSkillMessage::OfferSkill(skill))?).await?;
+            send.write_all(&postcard::to_allocvec(&DirectSkillMessage::from(skill))?).await?;
             send.finish()?;
             recv.read_to_end(64).await?; // wait for the receiver's verdict
         }
@@ -172,7 +185,7 @@ async fn offer_skills(endpoint: Endpoint, to: EndpointId, skills: Vec<SkillPacka
 /// Inbound side of `SKILL_EXCHANGE_ALPN`: bounded read, reputation gate, full validation.
 struct SkillExchange {
     store: Arc<FactorStore>,
-    tx: mpsc::Sender<SkillPackage>,
+    tx: mpsc::Sender<Skill>,
 }
 
 impl std::fmt::Debug for SkillExchange {
@@ -182,8 +195,11 @@ impl std::fmt::Debug for SkillExchange {
 }
 
 impl SkillExchange {
-    fn check(&self, peer: &EndpointId, bytes: &[u8]) -> Result<SkillPackage> {
-        let DirectSkillMessage::OfferSkill(skill) = postcard::from_bytes(bytes).context("malformed skill message")?;
+    fn check(&self, peer: &EndpointId, bytes: &[u8]) -> Result<Skill> {
+        let skill = match postcard::from_bytes(bytes).context("malformed skill message")? {
+            DirectSkillMessage::OfferSkill(v1) => Skill::from(v1),
+            DirectSkillMessage::OfferSkillV2(v2) => v2,
+        };
         for key in [peer.as_bytes(), &skill.author_pubkey] {
             anyhow::ensure!(self.store.get_peer_reputation(key) >= QUARANTINE, "quarantined peer");
         }
@@ -215,5 +231,41 @@ impl SkillExchange {
 impl ProtocolHandler for SkillExchange {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         self.serve(&conn).await.map_err(|e| AcceptError::from_boxed(e.into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sigma_core::{NodeIdentity, PredicateRole, PredicateSchema, Program, Skill};
+
+    /// The message type of nodes that predate format v2.
+    #[derive(Serialize, Deserialize)]
+    enum V1Message {
+        OfferSkill(SkillPackage),
+    }
+
+    #[test]
+    fn v1_skills_stay_byte_identical_and_old_nodes_reject_v2_cleanly() {
+        let id = NodeIdentity::generate();
+        let mut v1 = SkillPackage {
+            skill_name: "tidy".into(),
+            version: 1,
+            author_pubkey: [0; 32],
+            signature: vec![],
+            predicates: vec![PredicateSchema::binary("GoalTidy", PredicateRole::Goal)],
+            factor_shape: vec![2],
+            factor_values: vec![1.0, 2.0],
+        };
+        id.sign_skill(&mut v1);
+        let new = postcard::to_allocvec(&DirectSkillMessage::from(Skill::from(v1.clone()))).unwrap();
+        assert_eq!(new, postcard::to_allocvec(&V1Message::OfferSkill(v1)).unwrap());
+
+        let mut v2 = Skill::program("empty", 1, Program::default());
+        id.sign(&mut v2);
+        let bytes = postcard::to_allocvec(&DirectSkillMessage::from(v2.clone())).unwrap();
+        assert!(postcard::from_bytes::<V1Message>(&bytes).is_err());
+        let DirectSkillMessage::OfferSkillV2(back) = postcard::from_bytes(&bytes).unwrap() else { panic!() };
+        assert_eq!(back, v2);
     }
 }

@@ -1,6 +1,6 @@
 //! ACID local persistence (`sigma_memory.redb`): identity, peer reputation, predicates, skills.
 
-use crate::{NodeIdentity, PredicateSchema, SigmaEngine, SkillPackage, QUARANTINE};
+use crate::{NodeIdentity, PredicateSchema, SigmaEngine, Skill, QUARANTINE};
 use redb::{Database, ReadableTable, TableDefinition, WriteTransaction};
 use std::path::Path;
 
@@ -9,6 +9,8 @@ const REPUTATION: TableDefinition<&[u8], f32> = TableDefinition::new("reputation
 const PREDICATES: TableDefinition<&str, &[u8]> = TableDefinition::new("predicates");
 /// skill_name -> postcard((SkillPackage as signed, live learned weights))
 const SKILLS: TableDefinition<&str, &[u8]> = TableDefinition::new("skills");
+/// skill_name -> postcard((Skill, live learned weights)) for format v2 skills.
+const SKILLS_V2: TableDefinition<&str, &[u8]> = TableDefinition::new("skills_v2");
 
 /// Default reputation of an unknown author.
 pub const DEFAULT_REPUTATION: f32 = 0.5;
@@ -29,6 +31,7 @@ impl FactorStore {
             tx.open_table(REPUTATION)?;
             tx.open_table(PREDICATES)?;
             tx.open_table(SKILLS)?;
+            tx.open_table(SKILLS_V2)?;
             Ok(())
         })?;
         Ok(store)
@@ -90,8 +93,10 @@ impl FactorStore {
         })
     }
 
-    pub fn save_skill(&self, skill: &SkillPackage) -> StoreResult<()> {
-        self.put_skill(skill, &skill.factor_values)
+    /// Stores a skill of either format with its initial weights.
+    pub fn save_skill(&self, skill: &(impl Clone + Into<Skill>)) -> StoreResult<()> {
+        let skill: Skill = skill.clone().into();
+        self.put_skill(&skill, &skill.weights())
     }
 
     /// Persists learned weights for an already stored skill.
@@ -103,7 +108,10 @@ impl FactorStore {
     }
 
     pub fn delete_skill(&self, skill_name: &str) -> StoreResult<bool> {
-        self.write(|tx| Ok(tx.open_table(SKILLS)?.remove(skill_name)?.is_some()))
+        self.write(|tx| {
+            let v1 = tx.open_table(SKILLS)?.remove(skill_name)?.is_some();
+            Ok(tx.open_table(SKILLS_V2)?.remove(skill_name)?.is_some() || v1)
+        })
     }
 
     pub fn save_predicate(&self, p: &PredicateSchema) -> StoreResult<()> {
@@ -116,15 +124,21 @@ impl FactorStore {
 
     /// Hydrates `engine` on boot. Skips quarantined authors and anything failing
     /// `validate()`; returns the skills that were restored.
-    pub fn restore_engine(&self, engine: &mut SigmaEngine) -> StoreResult<Vec<SkillPackage>> {
+    pub fn restore_engine(&self, engine: &mut SigmaEngine) -> StoreResult<Vec<Skill>> {
         let tx = self.db.begin_read()?;
         for row in tx.open_table(PREDICATES)?.iter()? {
             let p: PredicateSchema = postcard::from_bytes(row?.1.value())?;
             let _ = engine.register_predicate(&p);
         }
         let mut restored = Vec::new();
+        let mut rows = Vec::new();
         for row in tx.open_table(SKILLS)?.iter()? {
-            let (skill, weights): (SkillPackage, Vec<f32>) = postcard::from_bytes(row?.1.value())?;
+            rows.push(decode_skill(row?.1.value(), 1)?);
+        }
+        for row in tx.open_table(SKILLS_V2)?.iter()? {
+            rows.push(decode_skill(row?.1.value(), 2)?);
+        }
+        for (skill, weights) in rows {
             if self.get_peer_reputation(&skill.author_pubkey) < QUARANTINE
                 || engine.compile_skill(skill.clone()).is_err()
             {
@@ -136,17 +150,34 @@ impl FactorStore {
         Ok(restored)
     }
 
-    fn load_skill(&self, skill_name: &str) -> StoreResult<Option<(SkillPackage, Vec<f32>)>> {
+    fn load_skill(&self, skill_name: &str) -> StoreResult<Option<(Skill, Vec<f32>)>> {
         let tx = self.db.begin_read()?;
-        let row = tx.open_table(SKILLS)?.get(skill_name)?.map(|g| g.value().to_vec());
-        Ok(row.map(|b| postcard::from_bytes(&b)).transpose()?)
+        if let Some(g) = tx.open_table(SKILLS)?.get(skill_name)? {
+            return Ok(Some(decode_skill(g.value(), 1)?));
+        }
+        let row = tx.open_table(SKILLS_V2)?.get(skill_name)?.map(|g| g.value().to_vec());
+        row.map(|b| decode_skill(&b, 2)).transpose()
     }
 
-    fn put_skill(&self, skill: &SkillPackage, weights: &[f32]) -> StoreResult<()> {
-        let bytes = postcard::to_allocvec(&(skill, weights))?;
+    /// v1 skills keep their original row encoding; v2 skills live in their own table.
+    fn put_skill(&self, skill: &Skill, weights: &[f32]) -> StoreResult<()> {
+        let (bytes, own, other) = match skill.as_v1() {
+            Some(v1) => (postcard::to_allocvec(&(v1, weights))?, SKILLS, SKILLS_V2),
+            None => (postcard::to_allocvec(&(skill, weights))?, SKILLS_V2, SKILLS),
+        };
         self.write(|tx| {
-            tx.open_table(SKILLS)?.insert(skill.skill_name.as_str(), bytes.as_slice())?;
+            tx.open_table(other)?.remove(skill.skill_name.as_str())?;
+            tx.open_table(own)?.insert(skill.skill_name.as_str(), bytes.as_slice())?;
             Ok(())
         })
     }
+}
+
+fn decode_skill(bytes: &[u8], format: u8) -> StoreResult<(Skill, Vec<f32>)> {
+    Ok(if format == 1 {
+        let (v1, w): (crate::SkillPackage, Vec<f32>) = postcard::from_bytes(bytes)?;
+        (v1.into(), w)
+    } else {
+        postcard::from_bytes(bytes)?
+    })
 }

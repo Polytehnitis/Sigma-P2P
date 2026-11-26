@@ -10,13 +10,16 @@
 //! (closed world) when choosing an action.
 
 pub mod crypto;
+pub mod program;
 pub mod storage;
 
 use ndarray::{ArrayD, IxDyn};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 pub use crypto::NodeIdentity;
+pub use program::{Conditional, Pattern, PatternKind, PredicateDef, Program, Skill, SkillBody, Term, TypeDef};
 pub use storage::FactorStore;
 
 /// Largest factor value a skill may carry.
@@ -29,7 +32,12 @@ pub const SUBGOAL_PROMOTION: f32 = 0.65;
 pub const QUARANTINE: f32 = 0.25;
 const DEMO_WEIGHT: f32 = 10.0;
 const MIN_WEIGHT: f32 = 1e-3;
-const BP_ITERS: usize = 12;
+/// Message passing runs to quiescence (largest message change below `BP_TOLERANCE`),
+/// for at most `BP_ITERS` sweeps.
+const BP_ITERS: usize = 50;
+const BP_TOLERANCE: f32 = 1e-5;
+/// Candidate actions whose posteriors differ by less than this are tied.
+pub const TIE_MARGIN: f32 = 0.02;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PredicateRole {
@@ -107,11 +115,17 @@ pub struct VariableNode {
     pub evidence: Option<usize>,
 }
 
+/// One (ground) factor. A v1 skill compiles to one; a v2 skill to one per conditional binding.
 #[derive(Clone, Debug)]
 pub struct FactorNode {
-    pub package: SkillPackage,
+    pub skill: Arc<Skill>,
     pub vars: Vec<usize>,
+    /// Message direction of each slot (v1 factors are all `Condact`).
+    pub kinds: Vec<PatternKind>,
     pub table: ArrayD<f32>,
+    /// Where `table` sits in the skill's flat weights. Factors grounded from the same
+    /// conditional slice share it, so their learned tables are kept equal.
+    pub offset: usize,
     pub author_pubkey: [u8; 32],
     pub utility_score: f32,
 }
@@ -124,6 +138,29 @@ pub struct ImpasseEvent {
     pub role: PredicateRole,
 }
 
+/// Sigma's decision impasses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImpasseKind {
+    /// No candidate action for the deepest open (sub)goal.
+    None,
+    /// Several candidates that the available knowledge does not tell apart.
+    Tie,
+    /// The same action was selected again while working memory did not change.
+    NoChange,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DecisionImpasse {
+    pub kind: ImpasseKind,
+    /// The (sub)goal on top of the stack when the impasse arose.
+    pub goal: String,
+    pub candidates: Vec<String>,
+    /// True when reflective processing inside the impasse (one-step lookahead) settled it.
+    pub resolved: bool,
+    /// Consecutive cycles this kind of impasse has persisted.
+    pub cycles: u32,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CycleOutcome {
     pub goal_stack: Vec<String>,
@@ -132,7 +169,10 @@ pub struct CycleOutcome {
     pub beliefs: Vec<(String, Vec<f32>)>,
     /// `(skill_name, author_pubkey)` of every factor in the active chain.
     pub provenance: Vec<(String, [u8; 32])>,
+    /// Structural impasse (missing skill), broadcast to peers.
     pub impasse: Option<ImpasseEvent>,
+    /// Decision impasse (none, tie or no-change) from this cycle's decision phase.
+    pub decision_impasse: Option<DecisionImpasse>,
 }
 
 /// Factors and marginals of the last decision, kept for reinforcement.
@@ -142,13 +182,24 @@ struct Trace {
     marginals: Vec<Vec<f32>>,
 }
 
+/// What the previous decision saw, for no-change detection.
+#[derive(Debug)]
+struct LastDecision {
+    action: Option<usize>,
+    wm: Vec<Option<usize>>,
+    goals: Vec<String>,
+    impasse: Option<(ImpasseKind, u32)>,
+}
+
 #[derive(Debug, Default)]
 pub struct SigmaEngine {
     vars: Vec<VariableNode>,
     index: HashMap<String, usize>,
     factors: Vec<FactorNode>,
+    skills: Vec<Arc<Skill>>,
     pub goal_stack: Vec<String>,
     trace: Option<Trace>,
+    last: Option<LastDecision>,
 }
 
 impl SigmaEngine {
@@ -164,6 +215,10 @@ impl SigmaEngine {
         &self.vars
     }
 
+    pub fn skills(&self) -> &[Arc<Skill>] {
+        &self.skills
+    }
+
     /// Adds a predicate, or checks it agrees with the one already known.
     pub fn register_predicate(&mut self, p: &PredicateSchema) -> Result<usize, &'static str> {
         match self.index.get(&p.name) {
@@ -177,45 +232,77 @@ impl SigmaEngine {
         }
     }
 
-    /// Verifies and links a skill into the factor graph, replacing older versions of it.
-    pub fn compile_skill(&mut self, skill: SkillPackage) -> Result<(), &'static str> {
+    /// Verifies, grounds and links a skill (v1 or v2) into the factor graph, replacing
+    /// older versions of it.
+    pub fn compile_skill(&mut self, skill: impl Into<Skill>) -> Result<(), &'static str> {
+        let skill = skill.into();
         skill.validate()?;
-        if skill.predicates.iter().any(|p| self.index.get(&p.name).is_some_and(|&v| self.vars[v].schema != *p)) {
+        let grounding = skill.grounding()?;
+        let conflict = |p: &PredicateSchema| self.index.get(&p.name).is_some_and(|&v| self.vars[v].schema != *p);
+        if grounding.atoms.iter().chain(grounding.factors.iter().flat_map(|f| &f.predicates)).any(conflict) {
             return Err("predicate schema conflict");
         }
-        if let Some(old) = self.factors.iter().find(|f| f.package.skill_name == skill.skill_name) {
-            if old.package.version > skill.version {
-                return Err("stale skill version");
-            }
+        if self.skill(&skill.skill_name).is_some_and(|old| old.version > skill.version) {
+            return Err("stale skill version");
         }
-        self.factors.retain(|f| f.package.skill_name != skill.skill_name);
-        let vars = skill.predicates.iter().map(|p| self.register_predicate(p)).collect::<Result<_, _>>()?;
-        let table = ArrayD::from_shape_vec(IxDyn(&skill.factor_shape), skill.factor_values.clone())
-            .map_err(|_| "factor shape error")?;
-        self.factors.push(FactorNode {
-            author_pubkey: skill.author_pubkey,
-            package: skill,
-            vars,
-            table,
-            utility_score: 0.5,
-        });
+        self.remove_skill(&skill.skill_name);
+        for p in &grounding.atoms {
+            self.register_predicate(p)?;
+        }
+        let skill = Arc::new(skill);
+        for g in grounding.factors {
+            let vars = g.predicates.iter().map(|p| self.register_predicate(p)).collect::<Result<_, _>>()?;
+            let shape: Vec<usize> = g.predicates.iter().map(|p| p.domain_size).collect();
+            let table = ArrayD::from_shape_vec(IxDyn(&shape), g.values).map_err(|_| "factor shape error")?;
+            self.factors.push(FactorNode {
+                author_pubkey: skill.author_pubkey,
+                skill: skill.clone(),
+                vars,
+                kinds: g.kinds,
+                table,
+                offset: g.offset,
+                utility_score: 0.5,
+            });
+        }
+        self.skills.push(skill);
         self.trace = None;
         Ok(())
     }
 
-    /// Replaces a compiled skill's live (learned) weights after bounds checks.
+    /// Replaces a compiled skill's live (learned) flat weights after bounds checks.
     pub fn apply_weights(&mut self, skill_name: &str, weights: &[f32]) -> bool {
-        let Some(f) = self.factors.iter_mut().find(|f| f.package.skill_name == skill_name) else { return false };
-        let ok = weights.len() == f.table.len()
+        let Some(skill) = self.skill(skill_name) else { return false };
+        let ok = weights.len() == skill.weights().len()
             && weights.iter().all(|w| w.is_finite() && (0.0..=MAX_FACTOR_VALUE).contains(w));
         if ok {
-            f.table.iter_mut().zip(weights).for_each(|(t, w)| *t = *w);
+            for f in self.factors.iter_mut().filter(|f| f.skill.skill_name == skill_name) {
+                let n = f.table.len();
+                f.table.iter_mut().zip(&weights[f.offset..f.offset + n]).for_each(|(t, w)| *t = *w);
+            }
         }
         ok
     }
 
+    /// A skill's live flat weights (v2: every conditional function, concatenated).
     pub fn skill_weights(&self, skill_name: &str) -> Option<Vec<f32>> {
-        self.factor(skill_name).map(|f| f.table.iter().copied().collect())
+        let init = self.skill(skill_name)?.weights();
+        let (mut sum, mut count) = (vec![0.0; init.len()], vec![0u32; init.len()]);
+        for f in self.factors.iter().filter(|f| f.skill.skill_name == skill_name) {
+            for (i, w) in f.table.iter().enumerate() {
+                sum[f.offset + i] += w;
+                count[f.offset + i] += 1;
+            }
+        }
+        Some(init.into_iter().zip(sum).zip(count).map(|((w, s), c)| if c == 0 { w } else { s / c as f32 }).collect())
+    }
+
+    /// Re-ties factors grounded from the same function slice to their average.
+    fn tie_parameters(&mut self, names: &HashSet<String>) {
+        for name in names {
+            if let Some(w) = self.skill_weights(name) {
+                self.apply_weights(name, &w);
+            }
+        }
     }
 
     pub fn set_evidence(&mut self, name: &str, value: usize) -> Result<(), &'static str> {
@@ -252,11 +339,13 @@ impl SigmaEngine {
         done
     }
 
-    /// One perceive → infer → subgoal → select cycle.
+    /// One decision cycle: elaboration (message passing to quiescence, subgoaling), then
+    /// decision (select an action, or reach a none / tie / no-change impasse).
     pub fn cognitive_cycle(&mut self) -> CycleOutcome {
         self.pop_satisfied_goals();
         let Some(root) = self.goal_stack.first().and_then(|g| self.index.get(g)).copied() else {
             self.trace = None;
+            self.last = None;
             return CycleOutcome::default();
         };
         let stacked_goals: HashSet<usize> = self
@@ -266,7 +355,7 @@ impl SigmaEngine {
             .filter(|&v| self.vars[v].schema.role == PredicateRole::Goal)
             .collect();
 
-        // Phase 1: which subgoal states do the active goals call for?
+        // Elaboration 1: which subgoal states do the active goals call for?
         let p1 = self.infer(|v| if stacked_goals.contains(&v) { Some(1) } else { None });
         let (_, chain) = self.reachable(root);
         for v in chain {
@@ -280,7 +369,7 @@ impl SigmaEngine {
             }
         }
 
-        // Phase 2: pick the prerequisite action for the deepest open (sub)goal.
+        // Elaboration 2: action posteriors for the deepest open (sub)goal.
         let p2 = self.infer(|v| match self.vars[v].schema.role {
             _ if stacked_goals.contains(&v) => Some(1),
             PredicateRole::Subgoal => Some(0),
@@ -288,13 +377,50 @@ impl SigmaEngine {
         });
         let top = self.index[self.goal_stack.last().expect("root is on the stack")];
         let (top_factors, candidates) = self.reachable(top);
-        let selected = candidates
+        let mut ranked: Vec<(usize, f32)> = candidates
             .into_iter()
             .filter(|&v| self.vars[v].schema.role == PredicateRole::Action)
             .filter_map(|v| p2[v].get(1).map(|&p| (v, p)))
             .filter(|&(_, p)| p > 0.5)
-            .max_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(v, _)| v);
+            .collect();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let tied: Vec<usize> = ranked.iter().take_while(|c| ranked[0].1 - c.1 < TIE_MARGIN).map(|c| c.0).collect();
+
+        // Decision.
+        let (selected, mut impasse) = match tied.len() {
+            0 => (None, Some((ImpasseKind::None, Vec::new(), false))),
+            1 => (Some(tied[0]), None),
+            _ => {
+                // Tie impasse: reflect by looking one step ahead with each candidate.
+                let mut scored: Vec<(usize, f32)> =
+                    tied.iter().map(|&a| (a, self.lookahead(a, top, &tied, &stacked_goals))).collect();
+                scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+                let resolved = scored[0].1 - scored[1].1 >= TIE_MARGIN;
+                (resolved.then_some(scored[0].0), Some((ImpasseKind::Tie, tied.clone(), resolved)))
+            }
+        };
+        let wm: Vec<Option<usize>> = self.vars.iter().map(|n| n.evidence).collect();
+        if let (None, Some(last)) = (&impasse, &self.last) {
+            if selected.is_some() && last.action == selected && last.wm == wm && last.goals == self.goal_stack {
+                impasse = Some((ImpasseKind::NoChange, selected.into_iter().collect(), false));
+            }
+        }
+        let decision_impasse = impasse.map(|(kind, cands, resolved)| DecisionImpasse {
+            kind,
+            goal: self.vars[top].schema.name.clone(),
+            candidates: cands.iter().map(|&v| self.vars[v].schema.name.clone()).collect(),
+            resolved,
+            cycles: match self.last.as_ref().and_then(|l| l.impasse) {
+                Some((k, n)) if k == kind => n + 1,
+                _ => 1,
+            },
+        });
+        self.last = Some(LastDecision {
+            action: selected,
+            wm,
+            goals: self.goal_stack.clone(),
+            impasse: decision_impasse.as_ref().map(|d| (d.kind, d.cycles)),
+        });
 
         let mut active = self.reachable(root).0;
         for f in top_factors {
@@ -322,12 +448,26 @@ impl SigmaEngine {
                 .collect(),
             provenance: active
                 .iter()
-                .map(|&f| (self.factors[f].package.skill_name.clone(), self.factors[f].author_pubkey))
+                .map(|&f| (self.factors[f].skill.skill_name.clone(), self.factors[f].author_pubkey))
                 .collect(),
             impasse: self.detect_structural_impasse(),
+            decision_impasse,
         };
         self.trace = Some(Trace { factors: active, marginals });
         outcome
+    }
+
+    /// Reflection inside a tie impasse: how likely is `top` to hold if `action` is taken
+    /// (and the other tied candidates are not)?
+    fn lookahead(&self, action: usize, top: usize, tied: &[usize], stacked: &HashSet<usize>) -> f32 {
+        let p = self.infer(|v| match self.vars[v].schema.role {
+            _ if v == top => None,
+            _ if tied.contains(&v) => Some(usize::from(v == action)),
+            _ if stacked.contains(&v) => Some(1),
+            PredicateRole::Subgoal => Some(0),
+            _ => None,
+        });
+        p[top].get(1).copied().unwrap_or(0.0)
     }
 
     /// Walks the chain from the root goal; reports the first open (sub)goal with no
@@ -384,6 +524,7 @@ impl SigmaEngine {
         let reward = if reward.is_finite() { reward.clamp(-1.0, 1.0) } else { 0.0 };
         let Some(trace) = self.trace.as_ref() else { return Vec::new() };
         let mut attributions = Vec::new();
+        let mut touched = HashSet::new();
         for &fi in &trace.factors {
             let f = &mut self.factors[fi];
             for (idx, w) in f.table.indexed_iter_mut() {
@@ -392,16 +533,20 @@ impl SigmaEngine {
             }
             f.utility_score = (f.utility_score + 0.25 * reward).clamp(0.0, 1.0);
             attributions.push((f.author_pubkey, reward));
+            touched.insert(f.skill.skill_name.clone());
         }
+        self.tie_parameters(&touched);
         attributions
     }
 
-    /// Removes every skill matching `pred`, returning the removed packages.
-    pub fn evict_skills(&mut self, pred: impl Fn(&FactorNode) -> bool) -> Vec<SkillPackage> {
-        let (gone, keep) = std::mem::take(&mut self.factors).into_iter().partition(|f| pred(f));
-        self.factors = keep;
+    /// Removes every skill with a factor matching `pred`, returning the removed skills.
+    pub fn evict_skills(&mut self, pred: impl Fn(&FactorNode) -> bool) -> Vec<Skill> {
+        let names: HashSet<String> =
+            self.factors.iter().filter(|f| pred(f)).map(|f| f.skill.skill_name.clone()).collect();
+        let gone = self.skills.iter().filter(|s| names.contains(&s.skill_name)).map(|s| (**s).clone()).collect();
+        names.iter().for_each(|n| self.remove_skill(n));
         self.trace = None;
-        gone.into_iter().map(|f: FactorNode| f.package).collect()
+        gone
     }
 
     /// Turns a demonstrated assignment into a new signed skill and compiles it.
@@ -420,7 +565,7 @@ impl SigmaEngine {
         let mut factor_values = vec![1.0; len.ok_or("factor too large")?];
         let flat = demonstration.iter().zip(&factor_shape).fold(0, |acc, (x, d)| acc * d + x);
         factor_values[flat] = DEMO_WEIGHT;
-        let version = self.factor(skill_name).map_or(1, |f| f.package.version + 1);
+        let version = self.skill(skill_name).map_or(1, |s| s.version + 1);
         let mut skill = SkillPackage {
             skill_name: skill_name.into(),
             version,
@@ -435,16 +580,21 @@ impl SigmaEngine {
         Ok(skill)
     }
 
-    pub fn export_skill(&self, skill_name: &str) -> Option<SkillPackage> {
-        self.factor(skill_name).map(|f| f.package.clone())
+    pub fn export_skill(&self, skill_name: &str) -> Option<Skill> {
+        self.skill(skill_name).map(|s| (**s).clone())
     }
 
-    pub fn export_all_skills(&self) -> Vec<SkillPackage> {
-        self.factors.iter().map(|f| f.package.clone()).collect()
+    pub fn export_all_skills(&self) -> Vec<Skill> {
+        self.skills.iter().map(|s| (**s).clone()).collect()
     }
 
-    fn factor(&self, skill_name: &str) -> Option<&FactorNode> {
-        self.factors.iter().find(|f| f.package.skill_name == skill_name)
+    fn skill(&self, skill_name: &str) -> Option<&Arc<Skill>> {
+        self.skills.iter().find(|s| s.skill_name == skill_name)
+    }
+
+    fn remove_skill(&mut self, skill_name: &str) {
+        self.factors.retain(|f| f.skill.skill_name != skill_name);
+        self.skills.retain(|s| s.skill_name != skill_name);
     }
 
     fn satisfied(&self, v: usize) -> bool {
@@ -476,25 +626,35 @@ impl SigmaEngine {
         (fs, vs)
     }
 
-    /// Loopy sum-product. `clamp` adds assumptions on top of working-memory evidence.
+    /// Loopy sum-product to quiescence. `clamp` adds assumptions on top of working-memory
+    /// evidence. A `Condition` slot never receives messages from its factor, and an `Action`
+    /// slot never sends any into it.
     fn infer(&self, clamp: impl Fn(usize) -> Option<usize>) -> Vec<Vec<f32>> {
         let fixed: Vec<Option<usize>> =
             (0..self.vars.len()).map(|v| self.vars[v].evidence.or_else(|| clamp(v))).collect();
-        let mut msgs: Vec<Vec<Vec<f32>>> = self
-            .factors
-            .iter()
-            .map(|f| f.vars.iter().map(|&v| vec![1.0; self.vars[v].schema.domain_size]).collect())
-            .collect();
+        let uniform = |v: usize| normalize(vec![1.0; self.vars[v].schema.domain_size]);
+        let mut msgs: Vec<Vec<Vec<f32>>> =
+            self.factors.iter().map(|f| f.vars.iter().map(|&v| uniform(v)).collect()).collect();
         for _ in 0..BP_ITERS {
-            msgs = self
+            let next: Vec<Vec<Vec<f32>>> = self
                 .factors
                 .iter()
                 .enumerate()
                 .map(|(fi, f)| {
-                    let inbound: Vec<Vec<f32>> =
-                        f.vars.iter().enumerate().map(|(s, &v)| self.belief(v, &fixed, &msgs, Some((fi, s)))).collect();
+                    let inbound: Vec<Vec<f32>> = f
+                        .vars
+                        .iter()
+                        .enumerate()
+                        .map(|(s, &v)| match f.kinds[s] {
+                            PatternKind::Action => uniform(v),
+                            _ => self.belief(v, &fixed, &msgs, Some((fi, s))),
+                        })
+                        .collect();
                     (0..f.vars.len())
                         .map(|s| {
+                            if f.kinds[s] == PatternKind::Condition {
+                                return uniform(f.vars[s]);
+                            }
                             let mut out = vec![0.0; inbound[s].len()];
                             for (idx, &w) in f.table.indexed_iter() {
                                 out[idx[s]] +=
@@ -505,6 +665,16 @@ impl SigmaEngine {
                         .collect()
                 })
                 .collect();
+            let delta = next
+                .iter()
+                .flatten()
+                .flatten()
+                .zip(msgs.iter().flatten().flatten())
+                .fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+            msgs = next;
+            if delta < BP_TOLERANCE {
+                break;
+            }
         }
         (0..self.vars.len()).map(|v| self.belief(v, &fixed, &msgs, None)).collect()
     }
@@ -544,3 +714,5 @@ fn normalize(mut v: Vec<f32>) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_v2;
