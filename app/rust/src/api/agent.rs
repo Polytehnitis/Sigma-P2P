@@ -277,5 +277,12 @@ pub fn unpair_device(hex_pubkey: String) -> Result<()> {
 
 #[flutter_rust_bridge::frb(init)]
 pub fn init_app() {
+    // flutter_rust_bridge turns on RUST_BACKTRACE, so every returned `anyhow::Error` would
+    // capture a backtrace. On Linux the unwinder resolves to the copy bundled in
+    // libflutter_linux_gtk.so, which segfaults walking these frames: any FFI error (a bad
+    // pairing code, a malformed pubkey) killed the app. Panics keep their backtraces.
+    if std::env::var_os("RUST_LIB_BACKTRACE").is_none() {
+        std::env::set_var("RUST_LIB_BACKTRACE", "0");
+    }
     flutter_rust_bridge::setup_default_user_utils();
 }

@@ -49,5 +49,8 @@ void main() {
     expect(code, startsWith('sigma-pair:${info.endpointId}:'));
     await expectLater(pairDevice(code: code), throwsA(anything));
     await expectLater(pairDevice(code: 'not-a-code'), throwsA(anything));
+    // Errors come back as exceptions and the app keeps running.
+    await expectLater(trustPeerAuthor(hexPubkey: 'zz'), throwsA(anything));
+    expect(await pairedDevices(), isEmpty);
   });
 }
