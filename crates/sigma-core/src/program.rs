@@ -13,6 +13,7 @@
 use crate::{NodeIdentity, PredicateRole, PredicateSchema, SkillPackage, MAX_FACTOR_VALUE, MAX_TABLE_LEN};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// Most ground factors one v2 skill may expand to.
 pub const MAX_GROUNDINGS: usize = 4096;
@@ -73,6 +74,54 @@ pub struct Piece {
 pub const MAX_PIECES: usize = 1024;
 
 impl Function {
+    /// Shape checks for the analytic forms over `n` dimensions.
+    fn check(&self, n: usize) -> Result<(), &'static str> {
+        match self {
+            Function::Table(_) => Ok(()),
+            Function::PiecewiseLinear { pieces, .. } => {
+                if pieces.len() > MAX_PIECES
+                    || pieces.iter().any(|p| p.lo.len() != n || p.hi.len() != n || p.coef.len() != n + 1)
+                {
+                    return Err("invalid piecewise-linear function");
+                }
+                Ok(())
+            }
+            Function::Gaussian { target, mean, std } => {
+                if *target >= n || mean.len() != n + 1 || !(std.is_finite() && *std > 0.0) {
+                    return Err("invalid gaussian function");
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// The value of an analytic form at point `x` (a `Table` has none and yields 0). A
+    /// Gaussian is a density times `widths[target]` (pass 1s for the pure density).
+    pub fn eval(&self, x: &[f32], widths: &[f32]) -> f32 {
+        match self {
+            Function::Table(_) => 0.0,
+            Function::PiecewiseLinear { default, pieces } => {
+                let inside = |p: &&Piece| x.iter().zip(p.lo.iter().zip(&p.hi)).all(|(v, (l, h))| l <= v && v < h);
+                pieces
+                    .iter()
+                    .find(inside)
+                    .map_or(*default, |p| p.coef[0] + p.coef[1..].iter().zip(x).map(|(c, v)| c * v).sum::<f32>())
+            }
+            Function::Gaussian { target, mean, std } => {
+                let mu = mean[0]
+                    + mean[1..]
+                        .iter()
+                        .zip(x)
+                        .enumerate()
+                        .filter(|(i, _)| i != target)
+                        .map(|(_, (c, v))| c * v)
+                        .sum::<f32>();
+                let z = (x[*target] - mu) / std;
+                (-0.5 * z * z).exp() / (std * (2.0 * std::f32::consts::PI).sqrt()) * widths[*target]
+            }
+        }
+    }
+
     /// Values at every grid point (row-major); `axes[i]` lists dimension i's coordinates and
     /// `widths[i]` its region width (1 for symbols).
     fn tabulate(&self, axes: &[Vec<f32>], widths: &[f32]) -> Result<Vec<f32>, &'static str> {
@@ -81,41 +130,12 @@ impl Function {
         let values = match self {
             Function::Table(v) if v.len() == len => v.clone(),
             Function::Table(_) => return Err("function length does not match conditional"),
-            Function::PiecewiseLinear { default, pieces } => {
-                if pieces.len() > MAX_PIECES
-                    || pieces.iter().any(|p| p.lo.len() != n || p.hi.len() != n || p.coef.len() != n + 1)
-                {
-                    return Err("invalid piecewise-linear function");
-                }
+            _ => {
+                self.check(n)?;
                 let mut out = Vec::with_capacity(len);
                 for_each_assignment(&axes.iter().map(|a| a.len()).collect::<Vec<_>>(), |idx| {
                     let x: Vec<f32> = idx.iter().zip(axes).map(|(&i, a)| a[i]).collect();
-                    let inside = |p: &&Piece| x.iter().zip(p.lo.iter().zip(&p.hi)).all(|(v, (l, h))| l <= v && v < h);
-                    out.push(
-                        pieces.iter().find(inside).map_or(*default, |p| {
-                            p.coef[0] + p.coef[1..].iter().zip(&x).map(|(c, v)| c * v).sum::<f32>()
-                        }),
-                    );
-                });
-                out
-            }
-            Function::Gaussian { target, mean, std } => {
-                if *target >= n || mean.len() != n + 1 || !(std.is_finite() && *std > 0.0) {
-                    return Err("invalid gaussian function");
-                }
-                let mut out = Vec::with_capacity(len);
-                for_each_assignment(&axes.iter().map(|a| a.len()).collect::<Vec<_>>(), |idx| {
-                    let x: Vec<f32> = idx.iter().zip(axes).map(|(&i, a)| a[i]).collect();
-                    let mu = mean[0]
-                        + mean[1..]
-                            .iter()
-                            .zip(&x)
-                            .enumerate()
-                            .filter(|(i, _)| i != target)
-                            .map(|(_, (c, v))| c * v)
-                            .sum::<f32>();
-                    let z = (x[*target] - mu) / std;
-                    out.push((-0.5 * z * z).exp() / (std * (2.0 * std::f32::consts::PI).sqrt()) * widths[*target]);
+                    out.push(self.eval(&x, widths));
                 });
                 out
             }
@@ -191,6 +211,31 @@ pub struct GroundFactor {
     pub offset: usize,
     pub learnable: bool,
     pub normal: Option<usize>,
+    /// The analytic function behind a piecewise-linear or Gaussian factor, for evaluation at
+    /// exact (particle) points rather than region midpoints.
+    pub analytic: Option<Arc<Analytic>>,
+}
+
+/// An analytic conditional function restricted to one binding of its function variables.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Analytic {
+    pub function: Function,
+    /// Coordinates of the bound function variables (the leading dimensions).
+    pub prefix: Vec<f32>,
+}
+
+impl Analytic {
+    /// Value at slot coordinates `x` (a symbol's index, or the real value of a continuous slot);
+    /// a Gaussian gives its pure density.
+    pub fn eval(&self, x: &[f32]) -> f32 {
+        let point: Vec<f32> = self.prefix.iter().chain(x).copied().collect();
+        let v = self.function.eval(&point, &vec![1.0; point.len()]);
+        if v.is_finite() {
+            v.clamp(0.0, MAX_FACTOR_VALUE)
+        } else {
+            0.0
+        }
+    }
 }
 
 /// Every ground atom a skill declares, its factors and its initial flat weights.
@@ -407,6 +452,12 @@ impl Program {
                     offset: offset + start,
                     learnable: c.learnable,
                     normal: c.normal,
+                    analytic: (!matches!(c.function, Function::Table(_))).then(|| {
+                        Arc::new(Analytic {
+                            function: c.function.clone(),
+                            prefix: fv.iter().map(|&i| a[i] as f32).collect(),
+                        })
+                    }),
                 });
             });
             offset += function.len();
@@ -516,6 +567,7 @@ impl Skill {
                     offset: 0,
                     learnable: true,
                     normal: None,
+                    analytic: None,
                 }],
             }),
             SkillBody::Program(p) => p.ground(),
