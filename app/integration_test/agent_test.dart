@@ -24,6 +24,11 @@ void main() {
     );
     expect(step.impasse, 'GoalTidyDesk');
     expect(step.selectedAction, isNull);
+    // The avatar's inputs: a lost agent is afraid and has no candidate action.
+    expect(step.appraisal.emotion, Emotion.fear);
+    expect(step.appraisal.control, 0);
+    expect(step.decisionImpasse?.kind, DecisionImpasseKind.noCandidates);
+    expect(step.decisionImpasse?.goal, 'GoalTidyDesk');
 
     await teachAndShareSkill(
       skillName: 'tidy',
@@ -37,6 +42,8 @@ void main() {
     expect(step.selectedAction, 'ActionSortPapers');
     expect(step.impasse, isNull);
     expect(step.provenance.single.authorPubkey, info.authorPubkey);
+    expect(step.appraisal.control, inInclusiveRange(0, 1));
+    expect(step.appraisal.desirability, inInclusiveRange(-1, 1));
 
     final fb = await provideFeedback(reward: 1);
     expect(fb.evictedSkills, isEmpty);

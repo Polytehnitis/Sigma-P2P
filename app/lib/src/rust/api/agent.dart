@@ -9,7 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `agent`, `err`, `info`, `provenance`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Agent`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`, `from`
 
 /// Opens `<storage_dir>/sigma_memory.redb`, restores skills and joins the swarm.
 Future<AgentInfo> initAgent({
@@ -97,6 +97,42 @@ class AgentInfo {
           restoredSkills == other.restoredSkills;
 }
 
+/// The cycle's appraisal: desirability in [-1, 1], the rest in [0, 1].
+class Appraisal {
+  final double desirability;
+  final double surprise;
+  final double control;
+  final double familiarity;
+  final Emotion emotion;
+
+  const Appraisal({
+    required this.desirability,
+    required this.surprise,
+    required this.control,
+    required this.familiarity,
+    required this.emotion,
+  });
+
+  @override
+  int get hashCode =>
+      desirability.hashCode ^
+      surprise.hashCode ^
+      control.hashCode ^
+      familiarity.hashCode ^
+      emotion.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Appraisal &&
+          runtimeType == other.runtimeType &&
+          desirability == other.desirability &&
+          surprise == other.surprise &&
+          control == other.control &&
+          familiarity == other.familiarity &&
+          emotion == other.emotion;
+}
+
 class Belief {
   final String predicate;
   final Float32List distribution;
@@ -123,6 +159,11 @@ class CognitiveStep {
 
   /// The predicate the agent is missing a skill for (already broadcast to the swarm).
   final String? impasse;
+  final DecisionImpasse? decisionImpasse;
+  final Appraisal appraisal;
+
+  /// Skills that took part in elaboration when attention is limited (empty: all).
+  final List<String> attendedSkills;
 
   const CognitiveStep({
     required this.goalStack,
@@ -130,6 +171,9 @@ class CognitiveStep {
     required this.beliefs,
     required this.provenance,
     this.impasse,
+    this.decisionImpasse,
+    required this.appraisal,
+    required this.attendedSkills,
   });
 
   @override
@@ -138,7 +182,10 @@ class CognitiveStep {
       selectedAction.hashCode ^
       beliefs.hashCode ^
       provenance.hashCode ^
-      impasse.hashCode;
+      impasse.hashCode ^
+      decisionImpasse.hashCode ^
+      appraisal.hashCode ^
+      attendedSkills.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -149,8 +196,62 @@ class CognitiveStep {
           selectedAction == other.selectedAction &&
           beliefs == other.beliefs &&
           provenance == other.provenance &&
-          impasse == other.impasse;
+          impasse == other.impasse &&
+          decisionImpasse == other.decisionImpasse &&
+          appraisal == other.appraisal &&
+          attendedSkills == other.attendedSkills;
 }
+
+class DecisionImpasse {
+  final DecisionImpasseKind kind;
+  final String goal;
+  final List<String> candidates;
+
+  /// Reflective lookahead settled it.
+  final bool resolved;
+  final int cycles;
+
+  const DecisionImpasse({
+    required this.kind,
+    required this.goal,
+    required this.candidates,
+    required this.resolved,
+    required this.cycles,
+  });
+
+  @override
+  int get hashCode =>
+      kind.hashCode ^
+      goal.hashCode ^
+      candidates.hashCode ^
+      resolved.hashCode ^
+      cycles.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DecisionImpasse &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          goal == other.goal &&
+          candidates == other.candidates &&
+          resolved == other.resolved &&
+          cycles == other.cycles;
+}
+
+enum DecisionImpasseKind {
+  /// No candidate action for the open (sub)goal.
+  noCandidates,
+
+  /// Several candidates the knowledge does not tell apart.
+  tie,
+
+  /// The same action again while nothing changed.
+  noChange,
+}
+
+/// How the agent felt about its last cycle; drives the desktop avatar.
+enum Emotion { neutral, joy, distress, surprise, hope, fear }
 
 class Evidence {
   final String predicate;

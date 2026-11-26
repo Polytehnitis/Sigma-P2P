@@ -104,10 +104,25 @@ Cargokit builds the Rust crate for every target automatically. Android needs the
 
 In the app: tap **Start agent**, optionally entering your NAS EndpointId as the bootstrap peer. Enter a goal and tap **Run cognitive step**. Type observations such as `SubgoalMountNAS=1` to tell the agent a subgoal is now satisfied. Rate each decision with 👍 or 👎. When an impasse appears, the agent has already asked the swarm. Tap **Teach** to demonstrate the skill yourself, sign it and share it.
 
-FFI smoke test (Linux, headless):
+### Desktop avatar
+
+Tap the face button in the app bar to put Sigma on the desktop. The window turns into a small, frameless, transparent companion that stays on top of other windows: a round teal character with a light-bulb antenna. It shows Sigma's live state:
+
+- **Emotion** (from the cycle's appraisal) sets the face, the gesture and the antenna colour: joy cheers, distress droops, surprise startles, hope points at the chosen action, fear shrugs.
+- **Energy** follows surprise, desirability and control: excited moods hop, calm ones breathe.
+- **Decision impasses** show as pondering (a tie, or the same action with no change) and **missing skills** as a worried shrug with a *Teach me* button.
+- The speech bubble says what Sigma is about to do, and the pill underneath shows its attention focus (the attended skill, else the deepest open goal).
+
+Click the character to run a cycle, double-click to return to the full app, and drag to move it. Hover for 👍/👎 on the chosen action. Right-click (long-press on touch) for a menu with **Think now**, rating, **Teach a skill…**, **Think on my own** (a cycle every 10 seconds while the avatar is out, on by default) and **Open Sigma**. On Android and iOS the avatar opens as a full-screen page instead.
+
+Transparency needs a compositing window manager on Linux. Without one the companion keeps a black background.
+
+Tests:
 
 ```sh
-cd app && xvfb-run -a flutter test integration_test/agent_test.dart -d linux
+cd app && flutter test                                                # avatar mood, painting and interactions
+xvfb-run -a flutter test integration_test/agent_test.dart -d linux    # FFI smoke test
+xvfb-run -a flutter test integration_test/avatar_test.dart -d linux   # window becomes the companion and back
 ```
 
 ## Conventions

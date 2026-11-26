@@ -31,10 +31,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AgentInfo dco_decode_agent_info(dynamic raw);
 
   @protected
+  Appraisal dco_decode_appraisal(dynamic raw);
+
+  @protected
   Belief dco_decode_belief(dynamic raw);
 
   @protected
+  bool dco_decode_bool(dynamic raw);
+
+  @protected
+  DecisionImpasse dco_decode_box_autoadd_decision_impasse(dynamic raw);
+
+  @protected
   CognitiveStep dco_decode_cognitive_step(dynamic raw);
+
+  @protected
+  DecisionImpasse dco_decode_decision_impasse(dynamic raw);
+
+  @protected
+  DecisionImpasseKind dco_decode_decision_impasse_kind(dynamic raw);
+
+  @protected
+  Emotion dco_decode_emotion(dynamic raw);
 
   @protected
   Evidence dco_decode_evidence(dynamic raw);
@@ -73,6 +91,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? dco_decode_opt_String(dynamic raw);
 
   @protected
+  DecisionImpasse? dco_decode_opt_box_autoadd_decision_impasse(dynamic raw);
+
+  @protected
   PredicateDemo dco_decode_predicate_demo(dynamic raw);
 
   @protected
@@ -100,10 +121,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AgentInfo sse_decode_agent_info(SseDeserializer deserializer);
 
   @protected
+  Appraisal sse_decode_appraisal(SseDeserializer deserializer);
+
+  @protected
   Belief sse_decode_belief(SseDeserializer deserializer);
 
   @protected
+  bool sse_decode_bool(SseDeserializer deserializer);
+
+  @protected
+  DecisionImpasse sse_decode_box_autoadd_decision_impasse(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   CognitiveStep sse_decode_cognitive_step(SseDeserializer deserializer);
+
+  @protected
+  DecisionImpasse sse_decode_decision_impasse(SseDeserializer deserializer);
+
+  @protected
+  DecisionImpasseKind sse_decode_decision_impasse_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  Emotion sse_decode_emotion(SseDeserializer deserializer);
 
   @protected
   Evidence sse_decode_evidence(SseDeserializer deserializer);
@@ -146,6 +189,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? sse_decode_opt_String(SseDeserializer deserializer);
 
   @protected
+  DecisionImpasse? sse_decode_opt_box_autoadd_decision_impasse(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   PredicateDemo sse_decode_predicate_demo(SseDeserializer deserializer);
 
   @protected
@@ -164,9 +212,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_decode_unit(SseDeserializer deserializer);
 
   @protected
-  bool sse_decode_bool(SseDeserializer deserializer);
-
-  @protected
   void sse_encode_AnyhowException(
     AnyhowException self,
     SseSerializer serializer,
@@ -179,10 +224,37 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_agent_info(AgentInfo self, SseSerializer serializer);
 
   @protected
+  void sse_encode_appraisal(Appraisal self, SseSerializer serializer);
+
+  @protected
   void sse_encode_belief(Belief self, SseSerializer serializer);
 
   @protected
+  void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_decision_impasse(
+    DecisionImpasse self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_cognitive_step(CognitiveStep self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_decision_impasse(
+    DecisionImpasse self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_decision_impasse_kind(
+    DecisionImpasseKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_emotion(Emotion self, SseSerializer serializer);
 
   @protected
   void sse_encode_evidence(Evidence self, SseSerializer serializer);
@@ -236,6 +308,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_String(String? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_decision_impasse(
+    DecisionImpasse? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_predicate_demo(PredicateDemo self, SseSerializer serializer);
 
   @protected
@@ -255,9 +333,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_unit(void self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_bool(bool self, SseSerializer serializer);
 }
 
 // Section: wire_class

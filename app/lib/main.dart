@@ -1,7 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'avatar/avatar_mood.dart';
+import 'avatar/avatar_view.dart';
+import 'avatar/avatar_window.dart';
 import 'src/rust/api/agent.dart';
 import 'src/rust/frb_generated.dart';
 
@@ -45,6 +50,21 @@ class _AgentPageState extends State<AgentPage> {
   CognitiveStep? _step;
   bool _busy = false;
 
+  /// Desktop avatar mode: the window becomes a small always-on-top companion.
+  bool _avatar = false;
+  final _avatarWindow = AvatarWindow();
+  bool _autoThink = true;
+  Timer? _heartbeat;
+  String? _note;
+  Timer? _noteTimer;
+
+  @override
+  void dispose() {
+    _heartbeat?.cancel();
+    _noteTimer?.cancel();
+    super.dispose();
+  }
+
   Future<void> _guard(Future<void> Function() body) async {
     setState(() => _busy = true);
     try {
@@ -57,9 +77,51 @@ class _AgentPageState extends State<AgentPage> {
   }
 
   void _toast(String msg) {
+    if (_avatar) return _say(msg);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
     }
+  }
+
+  /// Shows `msg` in the avatar's speech bubble for a few seconds.
+  void _say(String msg) {
+    _noteTimer?.cancel();
+    setState(() => _note = msg);
+    _noteTimer = Timer(const Duration(seconds: 5), () {
+      if (mounted) setState(() => _note = null);
+    });
+  }
+
+  void _enterAvatar() {
+    final error = _avatarWindow.enter();
+    setState(() => _avatar = true);
+    if (error != null) _say(error);
+    _scheduleHeartbeat();
+  }
+
+  void _exitAvatar() {
+    _heartbeat?.cancel();
+    final error = _avatarWindow.exit();
+    setState(() {
+      _avatar = false;
+      _note = null;
+    });
+    if (error != null) _toast(error);
+  }
+
+  /// While the avatar is out, Sigma keeps thinking on its own every few seconds.
+  void _scheduleHeartbeat() {
+    _heartbeat?.cancel();
+    if (!_avatar || !_autoThink) return;
+    _heartbeat = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (_info != null && !_busy) _think();
+    });
+  }
+
+  Future<void> _teachFromAvatar() async {
+    _exitAvatar();
+    await _teach();
+    if (mounted) _enterAvatar();
   }
 
   Future<void> _start() => _guard(() async {
@@ -157,8 +219,24 @@ class _AgentPageState extends State<AgentPage> {
     setState(() => _step = step);
   });
 
+  /// One cognitive cycle without new observations or goals (the avatar's own pace).
+  Future<void> _think() => _guard(() async {
+    final step = await runCognitiveStep(
+      evidence: const [],
+      activeGoals: const [],
+    );
+    setState(() => _step = step);
+  });
+
   Future<void> _feedback(double reward) => _guard(() async {
     final r = await provideFeedback(reward: reward);
+    if (_avatar) {
+      return _say(
+        reward > 0
+            ? "Thanks! I'll do that again."
+            : "Sorry. I'll do that less.",
+      );
+    }
     final reps = r.reputations
         .map(
           (p) =>
@@ -192,12 +270,58 @@ class _AgentPageState extends State<AgentPage> {
     await _run();
   }
 
+  Widget _buildAvatar() {
+    final avatar = SigmaAvatar(
+      mood: AvatarMood.of(_step, online: _info != null),
+      note: _note,
+      busy: _busy,
+      onThink: _info == null ? null : (_step == null ? _run : _think),
+      onOpen: _exitAvatar,
+      onFeedback: _info == null || _step == null ? null : _feedback,
+      onTeach: _info == null ? null : _teachFromAvatar,
+      onDragStart: AvatarWindow.supported ? _avatarWindow.startDragging : null,
+      autoThink: _info == null ? null : _autoThink,
+      onAutoThinkChanged: (v) {
+        setState(() => _autoThink = v);
+        _scheduleHeartbeat();
+      },
+      alwaysShowControls: !AvatarWindow.supported,
+    );
+    if (AvatarWindow.supported) {
+      return Material(
+        type: MaterialType.transparency,
+        child: Center(child: avatar),
+      );
+    }
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Sigma'),
+        leading: IconButton(
+          tooltip: 'Back',
+          onPressed: _exitAvatar,
+          icon: const Icon(Icons.close),
+        ),
+      ),
+      body: Center(child: avatar),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (_avatar) return _buildAvatar();
     final step = _step;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Sigma cognitive agent'),
+        actions: [
+          IconButton(
+            tooltip: AvatarWindow.supported
+                ? 'Put Sigma on the desktop'
+                : 'Show Sigma',
+            onPressed: _enterAvatar,
+            icon: const Icon(Icons.face),
+          ),
+        ],
         bottom: _busy
             ? const PreferredSize(
                 preferredSize: Size.fromHeight(4),

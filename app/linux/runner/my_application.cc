@@ -22,6 +22,15 @@ static void my_application_activate(GApplication* application) {
 
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
+
+  // An RGBA visual, set before the window is realized, lets the desktop avatar
+  // mode make the window transparent around Sigma's character.
+  GdkScreen* screen = gtk_window_get_screen(window);
+  GdkVisual* visual = gdk_screen_get_rgba_visual(screen);
+  if (visual != nullptr && gdk_screen_is_composited(screen)) {
+    gtk_widget_set_visual(GTK_WIDGET(window), visual);
+    gtk_widget_set_app_paintable(GTK_WIDGET(window), TRUE);
+  }
   gtk_window_set_default_size(window, 1280, 720);
 
   // If you want to use a header bar, uncomment the following lines.
@@ -33,7 +42,7 @@ static void my_application_activate(GApplication* application) {
   // gtk_header_bar_set_show_close_button(header_bar, TRUE);
   // gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
 
-  gtk_window_set_title(window, "app");
+  gtk_window_set_title(window, "Sigma");
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(
@@ -41,9 +50,9 @@ static void my_application_activate(GApplication* application) {
 
   FlView* view = fl_view_new(project);
   GdkRGBA background_color;
-  // Background defaults to black, override it here if necessary, e.g. #00000000
-  // for transparent.
-  gdk_rgba_parse(&background_color, "#000000");
+  // Transparent, so the desktop avatar floats; the regular UI paints its own
+  // opaque background.
+  gdk_rgba_parse(&background_color, "#00000000");
   fl_view_set_background_color(view, &background_color);
   gtk_widget_show(GTK_WIDGET(view));
   gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(view));

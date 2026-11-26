@@ -3,7 +3,8 @@
 
 use anyhow::{anyhow, Context, Result};
 use sigma_core::{
-    crypto, FactorStore, NodeIdentity, PredicateRole, PredicateSchema, SigmaEngine, SkillPackage, QUARANTINE,
+    crypto, Emotion as CoreEmotion, FactorStore, ImpasseKind, NodeIdentity, PredicateRole, PredicateSchema,
+    SigmaEngine, SkillPackage, QUARANTINE,
 };
 use sigma_net::{EndpointId, SkillMeshNode};
 use std::collections::BTreeMap;
@@ -68,6 +69,56 @@ pub struct SkillProvenance {
     pub reputation: f32,
 }
 
+/// How the agent felt about its last cycle; drives the desktop avatar.
+pub enum Emotion {
+    Neutral,
+    Joy,
+    Distress,
+    Surprise,
+    Hope,
+    Fear,
+}
+
+impl From<CoreEmotion> for Emotion {
+    fn from(e: CoreEmotion) -> Self {
+        match e {
+            CoreEmotion::Neutral => Emotion::Neutral,
+            CoreEmotion::Joy => Emotion::Joy,
+            CoreEmotion::Distress => Emotion::Distress,
+            CoreEmotion::Surprise => Emotion::Surprise,
+            CoreEmotion::Hope => Emotion::Hope,
+            CoreEmotion::Fear => Emotion::Fear,
+        }
+    }
+}
+
+/// The cycle's appraisal: desirability in [-1, 1], the rest in [0, 1].
+pub struct Appraisal {
+    pub desirability: f32,
+    pub surprise: f32,
+    pub control: f32,
+    pub familiarity: f32,
+    pub emotion: Emotion,
+}
+
+pub enum DecisionImpasseKind {
+    /// No candidate action for the open (sub)goal.
+    NoCandidates,
+    /// Several candidates the knowledge does not tell apart.
+    Tie,
+    /// The same action again while nothing changed.
+    NoChange,
+}
+
+pub struct DecisionImpasse {
+    pub kind: DecisionImpasseKind,
+    pub goal: String,
+    pub candidates: Vec<String>,
+    /// Reflective lookahead settled it.
+    pub resolved: bool,
+    pub cycles: u32,
+}
+
 pub struct CognitiveStep {
     pub goal_stack: Vec<String>,
     pub selected_action: Option<String>,
@@ -75,6 +126,10 @@ pub struct CognitiveStep {
     pub provenance: Vec<SkillProvenance>,
     /// The predicate the agent is missing a skill for (already broadcast to the swarm).
     pub impasse: Option<String>,
+    pub decision_impasse: Option<DecisionImpasse>,
+    pub appraisal: Appraisal,
+    /// Skills that took part in elaboration when attention is limited (empty: all).
+    pub attended_skills: Vec<String>,
 }
 
 pub struct FeedbackResult {
@@ -175,6 +230,25 @@ pub fn run_cognitive_step(evidence: Vec<Evidence>, active_goals: Vec<String>) ->
         beliefs: out.beliefs.into_iter().map(|(predicate, distribution)| Belief { predicate, distribution }).collect(),
         provenance: out.provenance.into_iter().map(|(name, author)| provenance(a, name, author)).collect(),
         impasse: out.impasse.map(|i| i.missing_predicate),
+        decision_impasse: out.decision_impasse.map(|d| DecisionImpasse {
+            kind: match d.kind {
+                ImpasseKind::None => DecisionImpasseKind::NoCandidates,
+                ImpasseKind::Tie => DecisionImpasseKind::Tie,
+                ImpasseKind::NoChange => DecisionImpasseKind::NoChange,
+            },
+            goal: d.goal,
+            candidates: d.candidates,
+            resolved: d.resolved,
+            cycles: d.cycles,
+        }),
+        appraisal: Appraisal {
+            desirability: out.appraisal.desirability,
+            surprise: out.appraisal.surprise,
+            control: out.appraisal.control,
+            familiarity: out.appraisal.familiarity,
+            emotion: out.appraisal.emotion.into(),
+        },
+        attended_skills: out.attended_skills,
     })
 }
 
