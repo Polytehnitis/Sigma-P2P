@@ -16,6 +16,7 @@ A clean-room, decentralized personal cognitive agent inspired by the Sigma cogni
 * **Perception and motor buffers.** `perceive(name, distribution)` puts soft evidence in the perception buffer for exactly one cycle. Each selected action is appended to the motor buffer, which `take_motor_commands()` drains.
 * **Episodic memory.** Every cycle is recorded (goals, working memory, action, and the reward given later), up to 1024 episodes. Recall is Bayesian partial matching of a cue with a recency prior. When a decision reaches a **none** impasse, the engine tries the action of the best-matching *rewarded* episode before giving up.
 * **Semantic memory.** A naive-Bayes concept memory (`semantic.learn(category, features)`). During elaboration it classifies the current working memory and fills in unobserved features as percepts. Both memories persist in `sigma_memory.redb`.
+* **Gradient-descent learning.** `learn_gradient(rate)` fits factor functions to working memory, as Sigma does. A factor's gradient is the normalized product of its incoming messages. The function steps along it and is then renormalized, per row of the `normal` pattern for conditional distributions (`Conditional::normal`) or over the whole table otherwise, and each row keeps its total weight. v2 conditionals opt in with `learnable`. v1 tables are always learnable. With full evidence, it converges to the observed frequencies. Hebbian reinforcement from reward (`reinforce_factors`) is still there.
 
 ```
 crates/sigma-core     engine, crypto, redb storage (+ unit tests a–e)

@@ -14,7 +14,7 @@ pub mod memory;
 pub mod program;
 pub mod storage;
 
-use ndarray::{ArrayD, IxDyn};
+use ndarray::{ArrayD, Dimension, IxDyn};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -130,6 +130,10 @@ pub struct FactorNode {
     pub offset: usize,
     pub author_pubkey: [u8; 32],
     pub utility_score: f32,
+    /// Gradient learning may change this factor (v1: always; v2: per conditional).
+    pub learnable: bool,
+    /// Slot the table is a conditional distribution over (see `Conditional::normal`).
+    pub normal: Option<usize>,
 }
 
 /// A broken chain: `missing_predicate` (reached from `goal`) has no skill linking it to an action.
@@ -270,6 +274,8 @@ impl SigmaEngine {
                 table,
                 offset: g.offset,
                 utility_score: 0.5,
+                learnable: g.learnable,
+                normal: g.normal,
             });
         }
         self.skills.push(skill);
@@ -611,6 +617,74 @@ impl SigmaEngine {
         attributions
     }
 
+    /// One step of Sigma-style gradient descent on the likelihood of working memory.
+    ///
+    /// As in Sigma, a learnable factor's gradient is the normalized product of its incoming
+    /// messages. The (normalized) function moves `rate` along it and is renormalized: per
+    /// configuration of the other slots when the factor has a `normal` slot (a conditional
+    /// distribution), else over the whole table. Each group keeps its original total weight,
+    /// so only the shape of the function is learned. With full evidence this converges to the
+    /// observed frequencies. Returns the summed log local partition functions before the step
+    /// (a likelihood proxy that rises as the functions fit the data).
+    pub fn learn_gradient(&mut self, rate: f32) -> f32 {
+        let rate = if rate.is_finite() { rate.clamp(0.0, 1.0) } else { 0.0 };
+        let (prior, msgs) = self.propagate(|_| None);
+        let mut log_z = 0.0;
+        let mut touched = HashSet::new();
+        for fi in 0..self.factors.len() {
+            if !self.factors[fi].learnable {
+                continue;
+            }
+            let inbound: Vec<Vec<f32>> = self.factors[fi]
+                .vars
+                .iter()
+                .enumerate()
+                .map(|(s, &v)| self.belief(v, &prior, &msgs, Some((fi, s))))
+                .collect();
+            let f = &mut self.factors[fi];
+            let groups = |idx: &[usize]| -> usize {
+                // Rows that are normalized together: all slots except `normal`, or one group.
+                f.normal
+                    .map_or(0, |n| (0..idx.len()).filter(|&j| j != n).fold(0, |a, j| a * f.table.shape()[j] + idx[j]))
+            };
+            let n_groups = f.normal.map_or(1, |n| f.table.len() / f.table.shape()[n]);
+            let (mut mass, mut z, mut q_sum) = (vec![0.0f32; n_groups], 0.0f32, 0.0f32);
+            let q: Vec<f32> = f
+                .table
+                .indexed_iter()
+                .map(|(idx, &w)| {
+                    let q: f32 = idx.slice().iter().enumerate().map(|(j, &x)| inbound[j][x]).product();
+                    mass[groups(idx.slice())] += w;
+                    z += w * q;
+                    q_sum += q;
+                    q
+                })
+                .collect();
+            if z <= 0.0 || !z.is_finite() {
+                continue;
+            }
+            log_z += z.ln();
+            // Step on p = w / mass, then renormalize each group and restore its mass.
+            let mut stepped: Vec<(usize, f32)> = f
+                .table
+                .indexed_iter()
+                .zip(&q)
+                .map(|((idx, &w), &q)| {
+                    let g = groups(idx.slice());
+                    (g, w / mass[g] + rate * q / q_sum)
+                })
+                .collect();
+            let mut sums = vec![0.0f32; n_groups];
+            stepped.iter().for_each(|&(g, p)| sums[g] += p);
+            stepped.iter_mut().for_each(|(g, p)| *p = *p / sums[*g] * mass[*g]);
+            f.table.iter_mut().zip(stepped).for_each(|(w, (_, p))| *w = p.clamp(MIN_WEIGHT, MAX_FACTOR_VALUE));
+            touched.insert(f.skill.skill_name.clone());
+        }
+        self.tie_parameters(&touched);
+        self.trace = None;
+        log_z
+    }
+
     /// Removes every skill with a factor matching `pred`, returning the removed skills.
     pub fn evict_skills(&mut self, pred: impl Fn(&FactorNode) -> bool) -> Vec<Skill> {
         let names: HashSet<String> =
@@ -702,6 +776,13 @@ impl SigmaEngine {
     /// evidence. A `Condition` slot never receives messages from its factor, and an `Action`
     /// slot never sends any into it.
     fn infer(&self, clamp: impl Fn(usize) -> Option<usize>) -> Vec<Vec<f32>> {
+        let (prior, msgs) = self.propagate(clamp);
+        (0..self.vars.len()).map(|v| self.belief(v, &prior, &msgs, None)).collect()
+    }
+
+    /// Runs message passing; returns each variable's prior and the final factor-to-variable messages.
+    #[allow(clippy::type_complexity)]
+    fn propagate(&self, clamp: impl Fn(usize) -> Option<usize>) -> (Vec<Vec<f32>>, Vec<Vec<Vec<f32>>>) {
         let fixed: Vec<Vec<f32>> = (0..self.vars.len())
             .map(|v| {
                 let d = self.vars[v].schema.domain_size;
@@ -755,7 +836,7 @@ impl SigmaEngine {
                 break;
             }
         }
-        (0..self.vars.len()).map(|v| self.belief(v, &fixed, &msgs, None)).collect()
+        (fixed, msgs)
     }
 
     fn belief(&self, v: usize, prior: &[Vec<f32>], msgs: &[Vec<Vec<f32>>], skip: Option<(usize, usize)>) -> Vec<f32> {
@@ -786,6 +867,8 @@ pub(crate) fn normalize(mut v: Vec<f32>) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_learning;
 #[cfg(test)]
 mod tests_memory;
 #[cfg(test)]

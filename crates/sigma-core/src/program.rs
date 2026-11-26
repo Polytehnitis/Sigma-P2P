@@ -67,6 +67,11 @@ pub struct Conditional {
     pub patterns: Vec<Pattern>,
     pub function_vars: Vec<String>,
     pub function: Vec<f32>,
+    /// Whether gradient learning may change the function.
+    pub learnable: bool,
+    /// Pattern whose values the function is a distribution over, given the others (Sigma's
+    /// normalization variable). `None` normalizes the whole table when learning.
+    pub normal: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -83,6 +88,8 @@ pub struct GroundFactor {
     pub kinds: Vec<PatternKind>,
     pub values: Vec<f32>,
     pub offset: usize,
+    pub learnable: bool,
+    pub normal: Option<usize>,
 }
 
 /// Every ground atom a skill declares, and its factors.
@@ -177,6 +184,9 @@ impl Program {
             if c.patterns.is_empty() {
                 return Err("conditional without patterns");
             }
+            if c.normal.is_some_and(|n| n >= c.patterns.len()) {
+                return Err("normal pattern out of range");
+            }
             // Variable -> type, from every argument position it appears in.
             let mut var_types: Vec<(&str, &[String])> = Vec::new();
             for pat in &c.patterns {
@@ -254,6 +264,8 @@ impl Program {
                     kinds: kinds.clone(),
                     values: c.function[start..start + slice_len].to_vec(),
                     offset: offset + start,
+                    learnable: c.learnable,
+                    normal: c.normal,
                 });
             });
             offset += c.function.len();
@@ -363,6 +375,8 @@ impl Skill {
                     kinds: vec![PatternKind::Condact; predicates.len()],
                     values: factor_values.clone(),
                     offset: 0,
+                    learnable: true,
+                    normal: None,
                 }],
             }),
             SkillBody::Program(p) => p.ground(),
