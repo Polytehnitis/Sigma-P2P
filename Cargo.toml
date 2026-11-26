@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/sigma-core", "crates/sigma-net", "crates/sigma-daemon", "app/rust"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+sigma-core = { path = "crates/sigma-core" }
+sigma-net = { path = "crates/sigma-net" }
+serde = { version = "1.0", features = ["derive"] }
+postcard = { version = "1.1", features = ["alloc"] }
+blake3 = "1.8"
+tokio = { version = "1.44", features = ["full"] }
+anyhow = "1.0"

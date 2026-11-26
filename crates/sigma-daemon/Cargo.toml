@@ -1,0 +1,12 @@
+[package]
+name = "sigma-daemon"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+sigma-core.workspace = true
+sigma-net.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+clap = { version = "4.5", features = ["derive"] }

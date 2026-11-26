@@ -1,0 +1,16 @@
+[package]
+name = "sigma-net"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+sigma-core.workspace = true
+iroh = "1.5"
+iroh-gossip = "0.103"
+tokio.workspace = true
+serde.workspace = true
+postcard.workspace = true
+blake3.workspace = true
+n0-future = "0.3"
+anyhow.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "rust_lib_app"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+sigma-core.workspace = true
+sigma-net.workspace = true
+flutter_rust_bridge = "=2.13.0"
+tokio.workspace = true
+anyhow.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
