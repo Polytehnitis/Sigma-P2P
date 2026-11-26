@@ -146,6 +146,8 @@ async fn conditional_skill_crosses_the_mesh() {
             ],
             function_vars: vec![],
             function: vec![1.0, 1.0, 1.0, 10.0],
+            learnable: false,
+            normal: None,
         }],
     };
     let mut skill = Skill::program("tidy-rooms", 1, program);

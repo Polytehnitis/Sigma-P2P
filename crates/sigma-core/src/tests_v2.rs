@@ -17,7 +17,7 @@ fn pred(name: &str, role: PredicateRole, args: &[&str]) -> PredicateDef {
 }
 
 fn cond(name: &str, patterns: Vec<Pattern>, function: Vec<f32>) -> Conditional {
-    Conditional { name: name.into(), patterns, function_vars: vec![], function }
+    Conditional { name: name.into(), patterns, function_vars: vec![], function, learnable: false, normal: None }
 }
 
 pub(crate) fn signed_program(id: &NodeIdentity, name: &str, program: Program) -> Skill {
@@ -140,6 +140,8 @@ fn function_variables_give_each_binding_its_own_slice() {
             patterns: vec![pat(Condition, "Backup", vec![]), pat(PatternKind::Action, "Use", vec![var("d")])],
             function_vars: vec!["d".into()],
             function: vec![1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 8.0],
+            learnable: false,
+            normal: None,
         }],
     };
     let mut engine = SigmaEngine::new();
