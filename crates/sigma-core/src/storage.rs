@@ -167,13 +167,17 @@ impl FactorStore {
     }
 
     /// Persists the engine's episodic and semantic memories, merged into what is stored (which
-    /// may already hold memories synced from the user's other devices).
+    /// may already hold memories synced from the user's other devices), and its learned action
+    /// and reward models (kept on this device).
     pub fn save_memories(&self, engine: &SigmaEngine) -> StoreResult<()> {
+        let models = postcard::to_allocvec(&engine.models)?;
         self.write(|tx| {
             let (mut episodic, mut semantic) = read_memories(tx)?;
             episodic.merge(&engine.episodic);
             semantic.merge(&engine.semantic);
-            write_memories(tx, &episodic, &semantic)
+            write_memories(tx, &episodic, &semantic)?;
+            tx.open_table(MEMORIES)?.insert("models", models.as_slice())?;
+            Ok(())
         })
     }
 
@@ -321,6 +325,9 @@ impl FactorStore {
         }
         if let Some(g) = memories.get("semantic")? {
             engine.semantic = postcard::from_bytes(g.value())?;
+        }
+        if let Some(g) = memories.get("models")? {
+            engine.models = postcard::from_bytes(g.value())?;
         }
         let mut rows = Vec::new();
         for row in tx.open_table(SKILLS)?.iter()? {

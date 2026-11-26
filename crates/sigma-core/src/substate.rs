@@ -15,6 +15,7 @@
 //! impasse goes away or changes (other goal, other candidates, other kind), every lower state
 //! is deleted.
 
+use crate::graph_memory::{next_name, REWARD_WEIGHT};
 use crate::{ImpasseKind, PatternKind, PredicateRole, SigmaEngine, SUBGOAL_PROMOTION, TIE_MARGIN};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -149,9 +150,17 @@ impl SigmaEngine {
                     };
                 }
                 // Otherwise reason about every action connected to the goal.
+                // Otherwise reason about every action connected to the goal, by a skill or by a
+                // learned action model that predicts an effect on an open (sub)goal.
                 let (_, reach) = self.reachable(e.top);
-                let actions = reach.into_iter().filter(|&v| self.vars[v].schema.role == PredicateRole::Action);
-                (ImpasseKind::None, actions.collect(), None)
+                let mut actions: Vec<usize> =
+                    reach.into_iter().filter(|&v| self.vars[v].schema.role == PredicateRole::Action).collect();
+                for a in self.modeled_means() {
+                    if !actions.contains(&a) {
+                        actions.push(a);
+                    }
+                }
+                (ImpasseKind::None, actions, None)
             }
             1 if self.conflicted(tied[0], e) => (ImpasseKind::Conflict, others, None),
             1 if repeats(tied[0]) => (ImpasseKind::NoChange, others, Some(tied[0])),
@@ -203,7 +212,8 @@ impl SigmaEngine {
                 } else {
                     state.imagine(a, root, candidates, horizon, 1, &[], &mut search)
                 };
-                (a, v)
+                // Reinforcement learning: the reward model's advantage for the action.
+                (a, (v + REWARD_WEIGHT * self.reward_advantage(a)).max(0.0))
             })
             .collect();
         evaluations.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -345,7 +355,14 @@ impl SigmaEngine {
         for g in &self.goal_stack {
             let v = self.index[g];
             let (p, idle) = if goals.contains(&v) { (&top, &top_idle) } else { (&sub, &sub_idle) };
-            let (q, q0) = (p[v].get(1).copied().unwrap_or(0.0), idle[v].get(1).copied().unwrap_or(0.0));
+            let (mut q, mut q0) = (p[v].get(1).copied().unwrap_or(0.0), idle[v].get(1).copied().unwrap_or(0.0));
+            // The learned action model's prediction, where it says more.
+            if let Some(&m) = self.index.get(&next_name(g, &self.vars[action].schema.name)) {
+                let (mq, mq0) = (sub[m].get(1).copied().unwrap_or(0.0), sub_idle[m].get(1).copied().unwrap_or(0.0));
+                if mq - mq0 > q - q0 {
+                    (q, q0) = (mq, mq0);
+                }
+            }
             if !self.satisfied(v) && q > SUBGOAL_PROMOTION && q - q0 >= TIE_MARGIN {
                 confidence *= q;
                 next.vars[v].evidence = Some(1);
@@ -368,7 +385,8 @@ impl SigmaEngine {
         let ranked: Vec<(usize, f32)> = e.ranked.into_iter().filter(|c| !path.contains(&c.0)).collect();
         let tied: Vec<usize> = ranked.iter().take_while(|c| ranked[0].1 - c.1 < TIE_MARGIN).map(|c| c.0).collect();
         let tail = match tied.len() {
-            0 => 0.0,
+            // Nothing more to do in the imagined state: it is worth what it already achieves.
+            0 => DISCOUNT * next.step_value(None, goal, &[]),
             1 => next.imagine(tied[0], goal, &[tied[0]], horizon - 1, depth, &path, search),
             _ if depth < MAX_SUBSTATE_DEPTH => {
                 search.deepest = search.deepest.max(depth + 1);
@@ -379,6 +397,27 @@ impl SigmaEngine {
             _ => next.imagine(tied[0], goal, &tied, horizon - 1, depth, &path, search),
         };
         now.max(DISCOUNT * confidence * tail)
+    }
+
+    /// Actions whose learned model predicts that they bring about an open (sub)goal.
+    fn modeled_means(&self) -> Vec<usize> {
+        let open: Vec<&String> = self.goal_stack.iter().filter(|g| !self.satisfied(self.index[*g])).collect();
+        let effective = |f: &crate::FactorNode, a: usize| {
+            let an = &self.vars[a].schema.name;
+            if f.vars[0] != a
+                || f.table.len() != 4
+                || !open.iter().any(|g| self.vars[f.vars[1]].schema.name == next_name(g, an))
+            {
+                return false;
+            }
+            let t: Vec<f32> = f.table.iter().copied().collect();
+            let (q, q0) = (t[3] / (t[2] + t[3]), t[1] / (t[0] + t[1]));
+            q > SUBGOAL_PROMOTION && q - q0 >= TIE_MARGIN
+        };
+        (0..self.vars.len())
+            .filter(|&a| self.vars[a].schema.role == PredicateRole::Action)
+            .filter(|&a| self.memory_factors().iter().any(|f| effective(f, a)))
+            .collect()
     }
 
     /// A conflict: among the factors that send `action` a message, some are sure it should be

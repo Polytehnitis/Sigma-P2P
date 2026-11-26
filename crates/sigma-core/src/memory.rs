@@ -1,6 +1,8 @@
-//! Long-term memories beside the skill graph: episodic (what happened, when) and semantic
-//! (what kinds of things there are). Both are learned from working memory, and both are
-//! recalled by Bayesian partial matching against a cue, as in Sigma.
+//! Long-term memories: episodic (what happened, when) and semantic (what kinds of things
+//! there are). Both are learned from working memory. These stores are what is persisted and
+//! synced; in the decision cycle they are compiled into the factor graph and recalled by
+//! message passing (see [`crate::graph_memory`]). The `recall` methods here are the same
+//! Bayesian partial matching, run directly on the store.
 
 use serde::{Deserialize, Serialize};
 use std::collections::btree_map::Entry;
@@ -9,9 +11,9 @@ use std::collections::{BTreeMap, VecDeque};
 /// Episodes kept before the oldest is forgotten.
 pub const EPISODIC_CAPACITY: usize = 1024;
 /// Chance that a stored value is misremembered (keeps partial matches alive).
-const NOISE: f32 = 0.05;
+pub(crate) const NOISE: f32 = 0.05;
 /// Per-cycle decay of the recency prior.
-const RECENCY: f32 = 0.01;
+pub(crate) const RECENCY: f32 = 0.01;
 
 /// One decision cycle as the agent lived it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -201,6 +203,23 @@ impl SemanticMemory {
             *own = (*own).max(*d);
         }
         *self != before
+    }
+
+    /// Every concept with its count.
+    pub fn concepts(&self) -> Vec<(String, f32)> {
+        self.concepts.iter().map(|(n, c)| (n.clone(), c.count)).collect()
+    }
+
+    /// Every feature seen.
+    pub fn features(&self) -> Vec<String> {
+        self.domains.keys().cloned().collect()
+    }
+
+    /// P(feature = x | concept) over a domain of `d` values, with add-one smoothing.
+    pub fn likelihood_of(&self, concept: &str, feature: &str, x: usize, d: usize) -> f32 {
+        let Some(c) = self.concepts.get(concept) else { return 1.0 / d as f32 };
+        let seen = c.features.get(feature).and_then(|v| v.get(x)).copied().unwrap_or(0.0);
+        (seen + 1.0) / (c.count + d as f32)
     }
 
     /// P(value | category) with add-one smoothing.
