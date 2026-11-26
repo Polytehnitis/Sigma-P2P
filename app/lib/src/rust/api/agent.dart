@@ -32,6 +32,28 @@ Future<CognitiveStep> runCognitiveStep({
   activeGoals: activeGoals,
 );
 
+/// Releases the action awaiting confirmation. `token` must be the one the last step showed
+/// the user; a token works once. Returns the action now sent to the actuator.
+Future<String> confirmAction({required String token}) =>
+    RustLib.instance.api.crateApiAgentConfirmAction(token: token);
+
+/// Drops the action awaiting confirmation; it is never taken.
+Future<String?> cancelPendingAction() =>
+    RustLib.instance.api.crateApiAgentCancelPendingAction();
+
+/// Reverses the most recent undoable action: working memory and goals go back to when it
+/// was chosen, and its reverse action is sent to the actuator.
+Future<UndoResult> undoLastAction() =>
+    RustLib.instance.api.crateApiAgentUndoLastAction();
+
+/// This node's action safety rules.
+Future<List<ActionRule>> actionRules() =>
+    RustLib.instance.api.crateApiAgentActionRules();
+
+/// Replaces this node's action safety rules (signed by this node and persisted).
+Future<void> setActionRules({required List<ActionRule> rules}) =>
+    RustLib.instance.api.crateApiAgentSetActionRules(rules: rules);
+
 /// Reinforces the last decision's chain (reward in [-1, 1]), updates author reputation
 /// and evicts skills whose author or utility fell below the quarantine threshold.
 Future<FeedbackResult> provideFeedback({required double reward}) =>
@@ -71,6 +93,32 @@ Future<List<String>> pairedDevices() =>
 /// Unpairs a device on all of the user's devices; it stops receiving private state.
 Future<void> unpairDevice({required String hexPubkey}) =>
     RustLib.instance.api.crateApiAgentUnpairDevice(hexPubkey: hexPubkey);
+
+/// Safety rule for one action: what reverses it, or that it needs confirmation every time.
+class ActionRule {
+  final String action;
+  final String? reverse;
+  final bool irreversible;
+
+  const ActionRule({
+    required this.action,
+    this.reverse,
+    required this.irreversible,
+  });
+
+  @override
+  int get hashCode =>
+      action.hashCode ^ reverse.hashCode ^ irreversible.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ActionRule &&
+          runtimeType == other.runtimeType &&
+          action == other.action &&
+          reverse == other.reverse &&
+          irreversible == other.irreversible;
+}
 
 class AgentInfo {
   final String endpointId;
@@ -124,12 +172,25 @@ class CognitiveStep {
   /// The predicate the agent is missing a skill for (already broadcast to the swarm).
   final String? impasse;
 
+  /// The selected action is irreversible and waits for the user. Only the UI holds the
+  /// token; pass it to `confirm_action` when the user approves.
+  final ConfirmationRequest? awaitingConfirmation;
+
+  /// Actions released to the actuator during this step (confirmed ones included).
+  final List<String> motorCommands;
+
+  /// Actions `undo_last_action` can reverse, oldest first.
+  final List<String> undoStack;
+
   const CognitiveStep({
     required this.goalStack,
     this.selectedAction,
     required this.beliefs,
     required this.provenance,
     this.impasse,
+    this.awaitingConfirmation,
+    required this.motorCommands,
+    required this.undoStack,
   });
 
   @override
@@ -138,7 +199,10 @@ class CognitiveStep {
       selectedAction.hashCode ^
       beliefs.hashCode ^
       provenance.hashCode ^
-      impasse.hashCode;
+      impasse.hashCode ^
+      awaitingConfirmation.hashCode ^
+      motorCommands.hashCode ^
+      undoStack.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -149,7 +213,28 @@ class CognitiveStep {
           selectedAction == other.selectedAction &&
           beliefs == other.beliefs &&
           provenance == other.provenance &&
-          impasse == other.impasse;
+          impasse == other.impasse &&
+          awaitingConfirmation == other.awaitingConfirmation &&
+          motorCommands == other.motorCommands &&
+          undoStack == other.undoStack;
+}
+
+class ConfirmationRequest {
+  final String action;
+  final String token;
+
+  const ConfirmationRequest({required this.action, required this.token});
+
+  @override
+  int get hashCode => action.hashCode ^ token.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ConfirmationRequest &&
+          runtimeType == other.runtimeType &&
+          action == other.action &&
+          token == other.token;
 }
 
 class Evidence {
@@ -241,4 +326,24 @@ class SkillProvenance {
           skillName == other.skillName &&
           authorPubkey == other.authorPubkey &&
           reputation == other.reputation;
+}
+
+class UndoResult {
+  final String action;
+
+  /// The reverse action sent to the actuator, or `None` if the action had not been taken yet.
+  final String? reverseAction;
+
+  const UndoResult({required this.action, this.reverseAction});
+
+  @override
+  int get hashCode => action.hashCode ^ reverseAction.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UndoResult &&
+          runtimeType == other.runtimeType &&
+          action == other.action &&
+          reverseAction == other.reverseAction;
 }

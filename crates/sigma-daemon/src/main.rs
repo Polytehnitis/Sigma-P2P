@@ -4,7 +4,7 @@
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
-use sigma_core::{crypto, FactorStore, SigmaEngine};
+use sigma_core::{crypto, ActionManifest, ActionSpec, FactorStore, SigmaEngine};
 use sigma_net::{EndpointId, SkillMeshNode};
 use std::{path::PathBuf, sync::Arc};
 
@@ -32,6 +32,28 @@ struct Args {
     /// Hex author pubkey of a paired device to unpair, on all your devices (repeatable).
     #[arg(long, value_name = "HEX")]
     unpair: Vec<String>,
+    /// Declare that REVERSE undoes ACTION, so the action can be undone (repeatable).
+    /// Replaces the stored action rules when any rule flag is given.
+    #[arg(long, value_name = "ACTION=REVERSE")]
+    reversible: Vec<String>,
+    /// Declare an action irreversible: it then always needs the user's confirmation (repeatable).
+    #[arg(long, value_name = "ACTION")]
+    irreversible: Vec<String>,
+    /// Remove all stored action rules.
+    #[arg(long)]
+    clear_action_rules: bool,
+}
+
+/// Builds the action specs given on the command line.
+fn action_specs(args: &Args) -> Result<Vec<ActionSpec>> {
+    let mut specs = Vec::new();
+    for rule in &args.reversible {
+        let (action, reverse) =
+            rule.split_once('=').ok_or_else(|| anyhow!("--reversible {rule}: expected ACTION=REVERSE"))?;
+        specs.push(ActionSpec::reversible(action.trim(), reverse.trim()));
+    }
+    specs.extend(args.irreversible.iter().map(|a| ActionSpec::irreversible(a.trim())));
+    Ok(specs)
 }
 
 #[tokio::main]
@@ -48,6 +70,21 @@ async fn main() -> Result<()> {
     for hex in &args.unpair {
         let key = crypto::pubkey_from_hex(hex).map_err(|e| anyhow!("--unpair {hex}: {e}"))?;
         store.unpair_device(&key).map_err(|e| anyhow!(e))?;
+    }
+
+    if args.clear_action_rules || !args.reversible.is_empty() || !args.irreversible.is_empty() {
+        let version = store.load_action_manifest().map_err(|e| anyhow!(e))?.map_or(1, |m| m.version + 1);
+        let manifest = ActionManifest::signed(&identity, version, action_specs(&args)?);
+        store.save_action_manifest(&manifest).map_err(|e| anyhow!("action rules: {e}"))?;
+    }
+    let rules = store.load_action_manifest().map_err(|e| anyhow!(e))?.map(|m| m.specs).unwrap_or_default();
+    println!("Action rules:        {}", rules.len());
+    for r in &rules {
+        match &r.reverse {
+            Some(rev) => println!("  {} (undo: {rev})", r.action),
+            None if r.irreversible => println!("  {} (irreversible: needs confirmation)", r.action),
+            None => println!("  {}", r.action),
+        }
     }
 
     let mut engine = SigmaEngine::new();

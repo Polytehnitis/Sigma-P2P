@@ -4,7 +4,10 @@
 //! store can hand its whole [`SyncState`] to the user's other devices and merge theirs back.
 
 use crate::sync::{keys, next_clock, Register, Stamp, SyncReport, SyncState};
-use crate::{crypto, EpisodicMemory, NodeIdentity, PredicateSchema, SemanticMemory, SigmaEngine, Skill, QUARANTINE};
+use crate::{
+    crypto, ActionManifest, EpisodicMemory, NodeIdentity, PredicateSchema, SemanticMemory, SigmaEngine, Skill,
+    QUARANTINE,
+};
 use redb::{Database, ReadableTable, TableDefinition, WriteTransaction};
 use std::path::Path;
 
@@ -20,6 +23,8 @@ const MEMORIES: TableDefinition<&str, &[u8]> = TableDefinition::new("memories");
 /// register key (see [`keys`]) -> postcard(Register): stamps of replicated state, plus the
 /// values that live nowhere else (goal stack, paired devices, tombstones).
 const SYNC: TableDefinition<&str, &[u8]> = TableDefinition::new("sync");
+/// "local" -> postcard(ActionManifest): this node's action safety specs (undo, confirmations).
+const ACTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("actions");
 const CLOCK_KEY: &str = "sync_clock";
 
 /// Default reputation of an unknown author.
@@ -44,6 +49,7 @@ impl FactorStore {
             tx.open_table(SKILLS_V2)?;
             tx.open_table(MEMORIES)?;
             tx.open_table(SYNC)?;
+            tx.open_table(ACTIONS)?;
             Ok(())
         })?;
         Ok(store)
@@ -182,6 +188,28 @@ impl FactorStore {
         Ok(value.map(postcard::from_bytes).transpose()?.unwrap_or_default())
     }
 
+    /// Stores this node's action manifest after validating it. Only manifests authored by
+    /// this device or one of its paired devices are accepted, and never an older version
+    /// than the one stored.
+    pub fn save_action_manifest(&self, manifest: &ActionManifest) -> StoreResult<()> {
+        manifest.validate()?;
+        let paired = self.is_paired(&manifest.author_pubkey);
+        self.write(|tx| {
+            anyhow_if(!paired && device_key(tx)? != manifest.author_pubkey, "untrusted action manifest author")?;
+            let mut t = tx.open_table(ACTIONS)?;
+            let old = t.get("local")?.map(|g| postcard::from_bytes::<ActionManifest>(g.value())).transpose()?;
+            anyhow_if(old.is_some_and(|o| o.version > manifest.version), "stale action manifest version")?;
+            t.insert("local", postcard::to_allocvec(manifest)?.as_slice())?;
+            Ok(())
+        })
+    }
+
+    pub fn load_action_manifest(&self) -> StoreResult<Option<ActionManifest>> {
+        let tx = self.db.begin_read()?;
+        let row = tx.open_table(ACTIONS)?.get("local")?.map(|g| g.value().to_vec());
+        Ok(row.map(|b| postcard::from_bytes(&b)).transpose()?)
+    }
+
     /// Everything this device replicates to the user's other devices.
     pub fn export_sync_state(&self) -> StoreResult<SyncState> {
         self.write(read_sync_state)
@@ -279,6 +307,13 @@ impl FactorStore {
             }
             engine.apply_weights(&skill.skill_name, &weights);
             restored.push(skill);
+        }
+        drop(tx);
+        if let Some(m) = self.load_action_manifest()? {
+            let me = self.write(device_key)?;
+            if m.author_pubkey == me || self.is_paired(&m.author_pubkey) {
+                let _ = engine.apply_action_manifest(&m);
+            }
         }
         Ok(restored)
     }
