@@ -542,6 +542,24 @@ impl SseDecode for crate::api::agent::AgentInfo {
     }
 }
 
+impl SseDecode for crate::api::agent::Appraisal {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_desirability = <f32>::sse_decode(deserializer);
+        let mut var_surprise = <f32>::sse_decode(deserializer);
+        let mut var_control = <f32>::sse_decode(deserializer);
+        let mut var_familiarity = <f32>::sse_decode(deserializer);
+        let mut var_emotion = <crate::api::agent::Emotion>::sse_decode(deserializer);
+        return crate::api::agent::Appraisal {
+            desirability: var_desirability,
+            surprise: var_surprise,
+            control: var_control,
+            familiarity: var_familiarity,
+            emotion: var_emotion,
+        };
+    }
+}
+
 impl SseDecode for crate::api::agent::Belief {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -566,6 +584,9 @@ impl SseDecode for crate::api::agent::CognitiveStep {
         let mut var_beliefs = <Vec<crate::api::agent::Belief>>::sse_decode(deserializer);
         let mut var_provenance = <Vec<crate::api::agent::SkillProvenance>>::sse_decode(deserializer);
         let mut var_impasse = <Option<String>>::sse_decode(deserializer);
+        let mut var_decisionImpasse = <Option<crate::api::agent::DecisionImpasse>>::sse_decode(deserializer);
+        let mut var_appraisal = <crate::api::agent::Appraisal>::sse_decode(deserializer);
+        let mut var_attendedSkills = <Vec<String>>::sse_decode(deserializer);
         let mut var_awaitingConfirmation = <Option<crate::api::agent::ConfirmationRequest>>::sse_decode(deserializer);
         let mut var_motorCommands = <Vec<String>>::sse_decode(deserializer);
         let mut var_undoStack = <Vec<String>>::sse_decode(deserializer);
@@ -575,6 +596,9 @@ impl SseDecode for crate::api::agent::CognitiveStep {
             beliefs: var_beliefs,
             provenance: var_provenance,
             impasse: var_impasse,
+            decision_impasse: var_decisionImpasse,
+            appraisal: var_appraisal,
+            attended_skills: var_attendedSkills,
             awaiting_confirmation: var_awaitingConfirmation,
             motor_commands: var_motorCommands,
             undo_stack: var_undoStack,
@@ -588,6 +612,53 @@ impl SseDecode for crate::api::agent::ConfirmationRequest {
         let mut var_action = <String>::sse_decode(deserializer);
         let mut var_token = <String>::sse_decode(deserializer);
         return crate::api::agent::ConfirmationRequest { action: var_action, token: var_token };
+    }
+}
+
+impl SseDecode for crate::api::agent::DecisionImpasse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_kind = <crate::api::agent::DecisionImpasseKind>::sse_decode(deserializer);
+        let mut var_goal = <String>::sse_decode(deserializer);
+        let mut var_candidates = <Vec<String>>::sse_decode(deserializer);
+        let mut var_resolved = <bool>::sse_decode(deserializer);
+        let mut var_cycles = <u32>::sse_decode(deserializer);
+        return crate::api::agent::DecisionImpasse {
+            kind: var_kind,
+            goal: var_goal,
+            candidates: var_candidates,
+            resolved: var_resolved,
+            cycles: var_cycles,
+        };
+    }
+}
+
+impl SseDecode for crate::api::agent::DecisionImpasseKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::agent::DecisionImpasseKind::NoCandidates,
+            1 => crate::api::agent::DecisionImpasseKind::Tie,
+            2 => crate::api::agent::DecisionImpasseKind::NoChange,
+            _ => unreachable!("Invalid variant for DecisionImpasseKind: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::agent::Emotion {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::agent::Emotion::Neutral,
+            1 => crate::api::agent::Emotion::Joy,
+            2 => crate::api::agent::Emotion::Distress,
+            3 => crate::api::agent::Emotion::Surprise,
+            4 => crate::api::agent::Emotion::Hope,
+            5 => crate::api::agent::Emotion::Fear,
+            _ => unreachable!("Invalid variant for Emotion: {}", inner),
+        };
     }
 }
 
@@ -741,6 +812,17 @@ impl SseDecode for Option<crate::api::agent::ConfirmationRequest> {
     }
 }
 
+impl SseDecode for Option<crate::api::agent::DecisionImpasse> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::api::agent::DecisionImpasse>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for crate::api::agent::PredicateDemo {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -885,6 +967,25 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::agent::AgentInfo> for crate::
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::agent::Appraisal {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.desirability.into_into_dart().into_dart(),
+            self.surprise.into_into_dart().into_dart(),
+            self.control.into_into_dart().into_dart(),
+            self.familiarity.into_into_dart().into_dart(),
+            self.emotion.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::agent::Appraisal {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::agent::Appraisal> for crate::api::agent::Appraisal {
+    fn into_into_dart(self) -> crate::api::agent::Appraisal {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::agent::Belief {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [self.predicate.into_into_dart().into_dart(), self.distribution.into_into_dart().into_dart()].into_dart()
@@ -905,6 +1006,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::agent::CognitiveStep {
             self.beliefs.into_into_dart().into_dart(),
             self.provenance.into_into_dart().into_dart(),
             self.impasse.into_into_dart().into_dart(),
+            self.decision_impasse.into_into_dart().into_dart(),
+            self.appraisal.into_into_dart().into_dart(),
+            self.attended_skills.into_into_dart().into_dart(),
             self.awaiting_confirmation.into_into_dart().into_dart(),
             self.motor_commands.into_into_dart().into_dart(),
             self.undo_stack.into_into_dart().into_dart(),
@@ -929,6 +1033,64 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::agent::ConfirmationRequest>
     for crate::api::agent::ConfirmationRequest
 {
     fn into_into_dart(self) -> crate::api::agent::ConfirmationRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::agent::DecisionImpasse {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.kind.into_into_dart().into_dart(),
+            self.goal.into_into_dart().into_dart(),
+            self.candidates.into_into_dart().into_dart(),
+            self.resolved.into_into_dart().into_dart(),
+            self.cycles.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::agent::DecisionImpasse {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::agent::DecisionImpasse> for crate::api::agent::DecisionImpasse {
+    fn into_into_dart(self) -> crate::api::agent::DecisionImpasse {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::agent::DecisionImpasseKind {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::NoCandidates => 0.into_dart(),
+            Self::Tie => 1.into_dart(),
+            Self::NoChange => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::agent::DecisionImpasseKind {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::agent::DecisionImpasseKind>
+    for crate::api::agent::DecisionImpasseKind
+{
+    fn into_into_dart(self) -> crate::api::agent::DecisionImpasseKind {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::agent::Emotion {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Neutral => 0.into_dart(),
+            Self::Joy => 1.into_dart(),
+            Self::Distress => 2.into_dart(),
+            Self::Surprise => 3.into_dart(),
+            Self::Hope => 4.into_dart(),
+            Self::Fear => 5.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::agent::Emotion {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::agent::Emotion> for crate::api::agent::Emotion {
+    fn into_into_dart(self) -> crate::api::agent::Emotion {
         self
     }
 }
@@ -1053,6 +1215,17 @@ impl SseEncode for crate::api::agent::AgentInfo {
     }
 }
 
+impl SseEncode for crate::api::agent::Appraisal {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <f32>::sse_encode(self.desirability, serializer);
+        <f32>::sse_encode(self.surprise, serializer);
+        <f32>::sse_encode(self.control, serializer);
+        <f32>::sse_encode(self.familiarity, serializer);
+        <crate::api::agent::Emotion>::sse_encode(self.emotion, serializer);
+    }
+}
+
 impl SseEncode for crate::api::agent::Belief {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -1076,6 +1249,9 @@ impl SseEncode for crate::api::agent::CognitiveStep {
         <Vec<crate::api::agent::Belief>>::sse_encode(self.beliefs, serializer);
         <Vec<crate::api::agent::SkillProvenance>>::sse_encode(self.provenance, serializer);
         <Option<String>>::sse_encode(self.impasse, serializer);
+        <Option<crate::api::agent::DecisionImpasse>>::sse_encode(self.decision_impasse, serializer);
+        <crate::api::agent::Appraisal>::sse_encode(self.appraisal, serializer);
+        <Vec<String>>::sse_encode(self.attended_skills, serializer);
         <Option<crate::api::agent::ConfirmationRequest>>::sse_encode(self.awaiting_confirmation, serializer);
         <Vec<String>>::sse_encode(self.motor_commands, serializer);
         <Vec<String>>::sse_encode(self.undo_stack, serializer);
@@ -1087,6 +1263,54 @@ impl SseEncode for crate::api::agent::ConfirmationRequest {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.action, serializer);
         <String>::sse_encode(self.token, serializer);
+    }
+}
+
+impl SseEncode for crate::api::agent::DecisionImpasse {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::agent::DecisionImpasseKind>::sse_encode(self.kind, serializer);
+        <String>::sse_encode(self.goal, serializer);
+        <Vec<String>>::sse_encode(self.candidates, serializer);
+        <bool>::sse_encode(self.resolved, serializer);
+        <u32>::sse_encode(self.cycles, serializer);
+    }
+}
+
+impl SseEncode for crate::api::agent::DecisionImpasseKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::agent::DecisionImpasseKind::NoCandidates => 0,
+                crate::api::agent::DecisionImpasseKind::Tie => 1,
+                crate::api::agent::DecisionImpasseKind::NoChange => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::agent::Emotion {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::agent::Emotion::Neutral => 0,
+                crate::api::agent::Emotion::Joy => 1,
+                crate::api::agent::Emotion::Distress => 2,
+                crate::api::agent::Emotion::Surprise => 3,
+                crate::api::agent::Emotion::Hope => 4,
+                crate::api::agent::Emotion::Fear => 5,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 
@@ -1216,6 +1440,16 @@ impl SseEncode for Option<crate::api::agent::ConfirmationRequest> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::agent::ConfirmationRequest>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::agent::DecisionImpasse> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::agent::DecisionImpasse>::sse_encode(value, serializer);
         }
     }
 }

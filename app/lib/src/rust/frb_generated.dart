@@ -639,6 +639,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  Appraisal dco_decode_appraisal(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return Appraisal(
+      desirability: dco_decode_f_32(arr[0]),
+      surprise: dco_decode_f_32(arr[1]),
+      control: dco_decode_f_32(arr[2]),
+      familiarity: dco_decode_f_32(arr[3]),
+      emotion: dco_decode_emotion(arr[4]),
+    );
+  }
+
+  @protected
   Belief dco_decode_belief(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -663,22 +678,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DecisionImpasse dco_decode_box_autoadd_decision_impasse(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_decision_impasse(raw);
+  }
+
+  @protected
   CognitiveStep dco_decode_cognitive_step(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return CognitiveStep(
       goalStack: dco_decode_list_String(arr[0]),
       selectedAction: dco_decode_opt_String(arr[1]),
       beliefs: dco_decode_list_belief(arr[2]),
       provenance: dco_decode_list_skill_provenance(arr[3]),
       impasse: dco_decode_opt_String(arr[4]),
+      decisionImpasse: dco_decode_opt_box_autoadd_decision_impasse(arr[5]),
+      appraisal: dco_decode_appraisal(arr[6]),
+      attendedSkills: dco_decode_list_String(arr[7]),
       awaitingConfirmation: dco_decode_opt_box_autoadd_confirmation_request(
-        arr[5],
+        arr[8],
       ),
-      motorCommands: dco_decode_list_String(arr[6]),
-      undoStack: dco_decode_list_String(arr[7]),
+      motorCommands: dco_decode_list_String(arr[9]),
+      undoStack: dco_decode_list_String(arr[10]),
     );
   }
 
@@ -692,6 +716,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       action: dco_decode_String(arr[0]),
       token: dco_decode_String(arr[1]),
     );
+  }
+
+  @protected
+  DecisionImpasse dco_decode_decision_impasse(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return DecisionImpasse(
+      kind: dco_decode_decision_impasse_kind(arr[0]),
+      goal: dco_decode_String(arr[1]),
+      candidates: dco_decode_list_String(arr[2]),
+      resolved: dco_decode_bool(arr[3]),
+      cycles: dco_decode_u_32(arr[4]),
+    );
+  }
+
+  @protected
+  DecisionImpasseKind dco_decode_decision_impasse_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return DecisionImpasseKind.values[raw as int];
+  }
+
+  @protected
+  Emotion dco_decode_emotion(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return Emotion.values[raw as int];
   }
 
   @protected
@@ -792,6 +843,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return raw == null
         ? null
         : dco_decode_box_autoadd_confirmation_request(raw);
+  }
+
+  @protected
+  DecisionImpasse? dco_decode_opt_box_autoadd_decision_impasse(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_decision_impasse(raw);
   }
 
   @protected
@@ -897,6 +954,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  Appraisal sse_decode_appraisal(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_desirability = sse_decode_f_32(deserializer);
+    var var_surprise = sse_decode_f_32(deserializer);
+    var var_control = sse_decode_f_32(deserializer);
+    var var_familiarity = sse_decode_f_32(deserializer);
+    var var_emotion = sse_decode_emotion(deserializer);
+    return Appraisal(
+      desirability: var_desirability,
+      surprise: var_surprise,
+      control: var_control,
+      familiarity: var_familiarity,
+      emotion: var_emotion,
+    );
+  }
+
+  @protected
   Belief sse_decode_belief(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_predicate = sse_decode_String(deserializer);
@@ -919,6 +993,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DecisionImpasse sse_decode_box_autoadd_decision_impasse(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_decision_impasse(deserializer));
+  }
+
+  @protected
   CognitiveStep sse_decode_cognitive_step(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_goalStack = sse_decode_list_String(deserializer);
@@ -926,6 +1008,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_beliefs = sse_decode_list_belief(deserializer);
     var var_provenance = sse_decode_list_skill_provenance(deserializer);
     var var_impasse = sse_decode_opt_String(deserializer);
+    var var_decisionImpasse = sse_decode_opt_box_autoadd_decision_impasse(
+      deserializer,
+    );
+    var var_appraisal = sse_decode_appraisal(deserializer);
+    var var_attendedSkills = sse_decode_list_String(deserializer);
     var var_awaitingConfirmation =
         sse_decode_opt_box_autoadd_confirmation_request(deserializer);
     var var_motorCommands = sse_decode_list_String(deserializer);
@@ -936,6 +1023,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       beliefs: var_beliefs,
       provenance: var_provenance,
       impasse: var_impasse,
+      decisionImpasse: var_decisionImpasse,
+      appraisal: var_appraisal,
+      attendedSkills: var_attendedSkills,
       awaitingConfirmation: var_awaitingConfirmation,
       motorCommands: var_motorCommands,
       undoStack: var_undoStack,
@@ -950,6 +1040,39 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_action = sse_decode_String(deserializer);
     var var_token = sse_decode_String(deserializer);
     return ConfirmationRequest(action: var_action, token: var_token);
+  }
+
+  @protected
+  DecisionImpasse sse_decode_decision_impasse(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_kind = sse_decode_decision_impasse_kind(deserializer);
+    var var_goal = sse_decode_String(deserializer);
+    var var_candidates = sse_decode_list_String(deserializer);
+    var var_resolved = sse_decode_bool(deserializer);
+    var var_cycles = sse_decode_u_32(deserializer);
+    return DecisionImpasse(
+      kind: var_kind,
+      goal: var_goal,
+      candidates: var_candidates,
+      resolved: var_resolved,
+      cycles: var_cycles,
+    );
+  }
+
+  @protected
+  DecisionImpasseKind sse_decode_decision_impasse_kind(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return DecisionImpasseKind.values[inner];
+  }
+
+  @protected
+  Emotion sse_decode_emotion(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return Emotion.values[inner];
   }
 
   @protected
@@ -1098,6 +1221,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DecisionImpasse? sse_decode_opt_box_autoadd_decision_impasse(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_decision_impasse(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   PredicateDemo sse_decode_predicate_demo(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_name = sse_decode_String(deserializer);
@@ -1183,6 +1319,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_appraisal(Appraisal self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_f_32(self.desirability, serializer);
+    sse_encode_f_32(self.surprise, serializer);
+    sse_encode_f_32(self.control, serializer);
+    sse_encode_f_32(self.familiarity, serializer);
+    sse_encode_emotion(self.emotion, serializer);
+  }
+
+  @protected
   void sse_encode_belief(Belief self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.predicate, serializer);
@@ -1205,6 +1351,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_decision_impasse(
+    DecisionImpasse self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_decision_impasse(self, serializer);
+  }
+
+  @protected
   void sse_encode_cognitive_step(CognitiveStep self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_String(self.goalStack, serializer);
@@ -1212,6 +1367,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_list_belief(self.beliefs, serializer);
     sse_encode_list_skill_provenance(self.provenance, serializer);
     sse_encode_opt_String(self.impasse, serializer);
+    sse_encode_opt_box_autoadd_decision_impasse(
+      self.decisionImpasse,
+      serializer,
+    );
+    sse_encode_appraisal(self.appraisal, serializer);
+    sse_encode_list_String(self.attendedSkills, serializer);
     sse_encode_opt_box_autoadd_confirmation_request(
       self.awaitingConfirmation,
       serializer,
@@ -1228,6 +1389,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.action, serializer);
     sse_encode_String(self.token, serializer);
+  }
+
+  @protected
+  void sse_encode_decision_impasse(
+    DecisionImpasse self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_decision_impasse_kind(self.kind, serializer);
+    sse_encode_String(self.goal, serializer);
+    sse_encode_list_String(self.candidates, serializer);
+    sse_encode_bool(self.resolved, serializer);
+    sse_encode_u_32(self.cycles, serializer);
+  }
+
+  @protected
+  void sse_encode_decision_impasse_kind(
+    DecisionImpasseKind self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_emotion(Emotion self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected
@@ -1362,6 +1551,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_confirmation_request(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_decision_impasse(
+    DecisionImpasse? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_decision_impasse(self, serializer);
     }
   }
 
