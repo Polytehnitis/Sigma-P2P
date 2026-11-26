@@ -27,8 +27,11 @@ async fn node(lookup: &MemoryLookup, bootstrap: Vec<EndpointId>) -> (SkillMeshNo
     (node, identity)
 }
 
-fn rand_suffix() -> u128 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+/// Unique per node even when tests run in parallel on a coarse clock.
+fn rand_suffix() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    format!("{}-{nanos}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
 fn signed(id: &NodeIdentity, name: &str, predicates: Vec<PredicateSchema>, factor_values: Vec<f32>) -> SkillPackage {
