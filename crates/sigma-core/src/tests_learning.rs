@@ -14,7 +14,7 @@ fn weather_program(learnable: bool) -> Program {
             name: "wet-given-rain".into(),
             patterns: vec![pat(PatternKind::Condition, "Rain"), pat(PatternKind::Condact, "Wet")],
             function_vars: vec![],
-            function: vec![1.0, 1.0, 1.0, 1.0],
+            function: Function::Table(vec![1.0, 1.0, 1.0, 1.0]),
             learnable,
             normal: Some(1),
         }],

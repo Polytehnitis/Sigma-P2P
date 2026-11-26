@@ -19,11 +19,113 @@ pub const MAX_GROUNDINGS: usize = 4096;
 /// Most values a symbolic type may have.
 pub const MAX_TYPE_VALUES: usize = 256;
 
-/// A symbolic type: an ordered list of constants.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TypeDef {
     pub name: String,
-    pub values: Vec<String>,
+    pub kind: TypeKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum TypeKind {
+    /// An ordered list of constants (usable as arguments and as values).
+    Symbolic(Vec<String>),
+    /// The real interval `[lo, hi)`, split into `bins` equal regions (usable as a value type,
+    /// which makes a hybrid predicate when its arguments are symbolic).
+    Continuous { lo: f32, hi: f32, bins: usize },
+}
+
+impl TypeDef {
+    pub fn symbolic(name: &str, values: &[&str]) -> Self {
+        Self { name: name.into(), kind: TypeKind::Symbolic(values.iter().map(|v| v.to_string()).collect()) }
+    }
+
+    pub fn continuous(name: &str, lo: f32, hi: f32, bins: usize) -> Self {
+        Self { name: name.into(), kind: TypeKind::Continuous { lo, hi, bins } }
+    }
+}
+
+/// A function over a conditional's dimensions: `function_vars` (outermost), then each
+/// pattern's value. A point's coordinate along a dimension is the symbol's index, or the
+/// region's midpoint for a continuous value. Every form is tabulated over the region grid
+/// when the skill is compiled.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Function {
+    /// Explicit row-major values.
+    Table(Vec<f32>),
+    /// Sigma's piecewise-linear functions: the first piece whose box contains a point gives
+    /// `coef[0] + Σ coef[i+1] · x_i`; points outside every piece get `default`.
+    PiecewiseLinear { default: f32, pieces: Vec<Piece> },
+    /// A normal density over dimension `target`, whose mean is affine in the coordinates
+    /// (`mean[0] + Σ mean[i+1] · x_i`, the target's own coefficient ignored), times the
+    /// region width: a continuous distribution in the style of PySigma.
+    Gaussian { target: usize, mean: Vec<f32>, std: f32 },
+}
+
+/// An axis-aligned box `[lo_i, hi_i)` per dimension with an affine function on it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Piece {
+    pub lo: Vec<f32>,
+    pub hi: Vec<f32>,
+    pub coef: Vec<f32>,
+}
+
+/// Most pieces a piecewise-linear function may have.
+pub const MAX_PIECES: usize = 1024;
+
+impl Function {
+    /// Values at every grid point (row-major); `axes[i]` lists dimension i's coordinates and
+    /// `widths[i]` its region width (1 for symbols).
+    fn tabulate(&self, axes: &[Vec<f32>], widths: &[f32]) -> Result<Vec<f32>, &'static str> {
+        let n = axes.len();
+        let len = product(axes.iter().map(|a| a.len()), MAX_TABLE_LEN).ok_or("conditional table too large")?;
+        let values = match self {
+            Function::Table(v) if v.len() == len => v.clone(),
+            Function::Table(_) => return Err("function length does not match conditional"),
+            Function::PiecewiseLinear { default, pieces } => {
+                if pieces.len() > MAX_PIECES
+                    || pieces.iter().any(|p| p.lo.len() != n || p.hi.len() != n || p.coef.len() != n + 1)
+                {
+                    return Err("invalid piecewise-linear function");
+                }
+                let mut out = Vec::with_capacity(len);
+                for_each_assignment(&axes.iter().map(|a| a.len()).collect::<Vec<_>>(), |idx| {
+                    let x: Vec<f32> = idx.iter().zip(axes).map(|(&i, a)| a[i]).collect();
+                    let inside = |p: &&Piece| x.iter().zip(p.lo.iter().zip(&p.hi)).all(|(v, (l, h))| l <= v && v < h);
+                    out.push(
+                        pieces.iter().find(inside).map_or(*default, |p| {
+                            p.coef[0] + p.coef[1..].iter().zip(&x).map(|(c, v)| c * v).sum::<f32>()
+                        }),
+                    );
+                });
+                out
+            }
+            Function::Gaussian { target, mean, std } => {
+                if *target >= n || mean.len() != n + 1 || !(std.is_finite() && *std > 0.0) {
+                    return Err("invalid gaussian function");
+                }
+                let mut out = Vec::with_capacity(len);
+                for_each_assignment(&axes.iter().map(|a| a.len()).collect::<Vec<_>>(), |idx| {
+                    let x: Vec<f32> = idx.iter().zip(axes).map(|(&i, a)| a[i]).collect();
+                    let mu = mean[0]
+                        + mean[1..]
+                            .iter()
+                            .zip(&x)
+                            .enumerate()
+                            .filter(|(i, _)| i != target)
+                            .map(|(_, (c, v))| c * v)
+                            .sum::<f32>();
+                    let z = (x[*target] - mu) / std;
+                    out.push((-0.5 * z * z).exp() / (std * (2.0 * std::f32::consts::PI).sqrt()) * widths[*target]);
+                });
+                out
+            }
+        };
+        if values.iter().all(|v| v.is_finite() && (0.0..=MAX_FACTOR_VALUE).contains(v)) {
+            Ok(values)
+        } else {
+            Err("factor value out of bounds")
+        }
+    }
 }
 
 /// A predicate with typed arguments. Each ground tuple of arguments becomes one variable,
@@ -60,13 +162,12 @@ pub struct Pattern {
     pub args: Vec<Term>,
 }
 
-/// `function` is row-major over `function_vars` (outermost) then each pattern's value.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Conditional {
     pub name: String,
     pub patterns: Vec<Pattern>,
     pub function_vars: Vec<String>,
-    pub function: Vec<f32>,
+    pub function: Function,
     /// Whether gradient learning may change the function.
     pub learnable: bool,
     /// Pattern whose values the function is a distribution over, given the others (Sigma's
@@ -92,11 +193,14 @@ pub struct GroundFactor {
     pub normal: Option<usize>,
 }
 
-/// Every ground atom a skill declares, and its factors.
+/// Every ground atom a skill declares, its factors and its initial flat weights.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Grounding {
     pub atoms: Vec<PredicateSchema>,
+    /// `[lo, hi)` of every ground atom with a continuous value type.
+    pub ranges: Vec<(String, f32, f32)>,
     pub factors: Vec<GroundFactor>,
+    pub weights: Vec<f32>,
 }
 
 /// The name of a ground atom: `Pred` for 0-ary predicates, else `Pred(a,b)`.
@@ -132,26 +236,56 @@ impl Program {
     /// Checks the program and expands it into ground factors. This is the only
     /// interpretation the engine ever applies to a v2 skill.
     pub fn ground(&self) -> Result<Grounding, &'static str> {
+        // Symbolic types, and continuous ones as (lo, hi, bins).
         let mut types: HashMap<&str, &[String]> = HashMap::new();
+        let mut reals: HashMap<&str, (f32, f32, usize)> = HashMap::new();
         for t in &self.types {
-            let distinct: HashSet<_> = t.values.iter().collect();
-            if t.values.is_empty()
-                || t.values.len() > MAX_TYPE_VALUES
-                || distinct.len() != t.values.len()
-                || !t.values.iter().all(|v| plain(v))
-            {
-                return Err("invalid type values");
-            }
-            if types.insert(&t.name, &t.values).is_some() {
+            let fresh = match &t.kind {
+                TypeKind::Symbolic(values) => {
+                    let distinct: HashSet<_> = values.iter().collect();
+                    if values.is_empty()
+                        || values.len() > MAX_TYPE_VALUES
+                        || distinct.len() != values.len()
+                        || !values.iter().all(|v| plain(v))
+                    {
+                        return Err("invalid type values");
+                    }
+                    !reals.contains_key(t.name.as_str()) && types.insert(&t.name, values).is_none()
+                }
+                &TypeKind::Continuous { lo, hi, bins } => {
+                    if !(lo.is_finite() && hi.is_finite() && lo < hi) || !(2..=MAX_TYPE_VALUES).contains(&bins) {
+                        return Err("invalid continuous type");
+                    }
+                    !types.contains_key(t.name.as_str()) && reals.insert(&t.name, (lo, hi, bins)).is_none()
+                }
+            };
+            if !fresh {
                 return Err("duplicate type");
             }
         }
         let domain = |p: &PredicateDef| -> Result<usize, &'static str> {
             match &p.value_type {
                 None => Ok(2),
-                Some(t) => types.get(t.as_str()).map(|v| v.len()).filter(|&n| n >= 2).ok_or("invalid value type"),
+                Some(t) => types
+                    .get(t.as_str())
+                    .map(|v| v.len())
+                    .or_else(|| reals.get(t.as_str()).map(|r| r.2))
+                    .filter(|&n| n >= 2)
+                    .ok_or("invalid value type"),
             }
         };
+        // Coordinates and region width along a predicate's value dimension.
+        let axis = |p: &PredicateDef, d: usize| -> (Vec<f32>, f32) {
+            match p.value_type.as_deref().and_then(|t| reals.get(t)) {
+                Some(&(lo, hi, bins)) => {
+                    let w = (hi - lo) / bins as f32;
+                    ((0..bins).map(|i| lo + (i as f32 + 0.5) * w).collect(), w)
+                }
+                None => ((0..d).map(|i| i as f32).collect(), 1.0),
+            }
+        };
+        let mut ranges = Vec::new();
+        let mut weights = Vec::new();
         let mut preds: HashMap<&str, (&PredicateDef, usize)> = HashMap::new();
         let mut atoms = Vec::new();
         for p in &self.predicates {
@@ -169,9 +303,14 @@ impl Program {
             }
             let dims: Vec<usize> = arg_types.iter().map(|v| v.len()).collect();
             product(dims.iter().copied(), MAX_GROUNDINGS).ok_or("too many ground atoms")?;
+            let range = p.value_type.as_deref().and_then(|t| reals.get(t));
             for_each_assignment(&dims, |a| {
                 let args: Vec<&str> = a.iter().zip(&arg_types).map(|(&i, v)| v[i].as_str()).collect();
-                atoms.push(PredicateSchema { name: atom_name(&p.name, &args), domain_size: d, role: p.role });
+                let name = atom_name(&p.name, &args);
+                if let Some(&(lo, hi, _)) = range {
+                    ranges.push((name.clone(), lo, hi));
+                }
+                atoms.push(PredicateSchema { name, domain_size: d, role: p.role });
             });
             if atoms.len() > MAX_GROUNDINGS {
                 return Err("too many ground atoms");
@@ -217,13 +356,15 @@ impl Program {
             }
             let value_dims: Vec<usize> = c.patterns.iter().map(|p| preds[p.predicate.as_str()].1).collect();
             let slice_len = product(value_dims.iter().copied(), MAX_TABLE_LEN).ok_or("conditional table too large")?;
-            let slices = product(fv.iter().map(|&i| var_types[i].1.len()), MAX_TABLE_LEN).ok_or("too many slices")?;
-            if c.function.len() != slice_len * slices {
-                return Err("function length does not match conditional");
+            let (mut axes, mut widths): (Vec<Vec<f32>>, Vec<f32>) =
+                fv.iter().map(|&i| ((0..var_types[i].1.len()).map(|x| x as f32).collect(), 1.0)).unzip();
+            for p in &c.patterns {
+                let (def, d) = preds[p.predicate.as_str()];
+                let (a, w) = axis(def, d);
+                axes.push(a);
+                widths.push(w);
             }
-            if !c.function.iter().all(|v| v.is_finite() && (0.0..=MAX_FACTOR_VALUE).contains(v)) {
-                return Err("factor value out of bounds");
-            }
+            let function = c.function.tabulate(&axes, &widths)?;
             let dims: Vec<usize> = var_types.iter().map(|(_, v)| v.len()).collect();
             if factors.len() + product(dims.iter().copied(), MAX_GROUNDINGS).ok_or("too many groundings")?
                 > MAX_GROUNDINGS
@@ -262,20 +403,16 @@ impl Program {
                 factors.push(GroundFactor {
                     predicates,
                     kinds: kinds.clone(),
-                    values: c.function[start..start + slice_len].to_vec(),
+                    values: function[start..start + slice_len].to_vec(),
                     offset: offset + start,
                     learnable: c.learnable,
                     normal: c.normal,
                 });
             });
-            offset += c.function.len();
+            offset += function.len();
+            weights.extend(function);
         }
-        Ok(Grounding { atoms, factors })
-    }
-
-    /// All conditional functions, concatenated: the skill's initial flat weights.
-    pub fn weights(&self) -> Vec<f32> {
-        self.conditionals.iter().flat_map(|c| c.function.iter().copied()).collect()
+        Ok(Grounding { atoms, ranges, factors, weights })
     }
 }
 
@@ -370,6 +507,8 @@ impl Skill {
         match &self.body {
             SkillBody::Table { predicates, factor_values, .. } => Ok(Grounding {
                 atoms: predicates.clone(),
+                ranges: Vec::new(),
+                weights: factor_values.clone(),
                 factors: vec![GroundFactor {
                     predicates: predicates.clone(),
                     kinds: vec![PatternKind::Condact; predicates.len()],
@@ -383,12 +522,10 @@ impl Skill {
         }
     }
 
-    /// Initial flat weights (what `SigmaEngine::skill_weights` returns before any learning).
+    /// Initial flat weights (what `SigmaEngine::skill_weights` returns before any learning):
+    /// every conditional's tabulated function, concatenated.
     pub fn weights(&self) -> Vec<f32> {
-        match &self.body {
-            SkillBody::Table { factor_values, .. } => factor_values.clone(),
-            SkillBody::Program(p) => p.weights(),
-        }
+        self.grounding().map(|g| g.weights).unwrap_or_default()
     }
 
     /// Dedup key for the mesh's skill index.

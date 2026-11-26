@@ -136,7 +136,7 @@ async fn conditional_skill_crosses_the_mesh() {
     let d = || vec![Term::Var("d".into())];
     let pred = |name: &str, role| PredicateDef { name: name.into(), role, args: vec!["room".into()], value_type: None };
     let program = Program {
-        types: vec![sigma_core::TypeDef { name: "room".into(), values: vec!["kitchen".into(), "office".into()] }],
+        types: vec![sigma_core::TypeDef::symbolic("room", &["kitchen", "office"])],
         predicates: vec![pred("Tidy", Goal), pred("Vacuum", Action)],
         conditionals: vec![Conditional {
             name: "tidy-by-vacuuming".into(),
@@ -145,7 +145,7 @@ async fn conditional_skill_crosses_the_mesh() {
                 Pattern { kind: PatternKind::Action, predicate: "Vacuum".into(), args: d() },
             ],
             function_vars: vec![],
-            function: vec![1.0, 1.0, 1.0, 10.0],
+            function: sigma_core::Function::Table(vec![1.0, 1.0, 1.0, 10.0]),
             learnable: false,
             normal: None,
         }],
