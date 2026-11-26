@@ -11,6 +11,7 @@
 
 pub mod crypto;
 pub mod memory;
+pub mod mind;
 pub mod program;
 pub mod storage;
 
@@ -21,6 +22,7 @@ use std::sync::Arc;
 
 pub use crypto::NodeIdentity;
 pub use memory::{Episode, EpisodicMemory, SemanticMemory, SemanticRecall};
+pub use mind::{Appraisal, Emotion, MindModel, OtherAgent};
 pub use program::{
     Conditional, Function, Pattern, PatternKind, Piece, PredicateDef, Program, Skill, SkillBody, Term, TypeDef,
     TypeKind,
@@ -184,6 +186,9 @@ pub struct CycleOutcome {
     pub impasse: Option<ImpasseEvent>,
     /// Decision impasse (none, tie or no-change) from this cycle's decision phase.
     pub decision_impasse: Option<DecisionImpasse>,
+    pub appraisal: Appraisal,
+    /// Skills that took part in elaboration, when an attention budget is set.
+    pub attended_skills: Vec<String>,
 }
 
 /// A particle message over a continuous predicate: weighted samples of its value.
@@ -233,6 +238,14 @@ pub struct SigmaEngine {
     motor: Vec<String>,
     pub episodic: EpisodicMemory,
     pub semantic: SemanticMemory,
+    /// Most factors that may take part in one cycle's elaboration (`None`: all).
+    pub attention_budget: Option<usize>,
+    attended: Option<Vec<bool>>,
+    /// Last cycle's beliefs, the predictions this cycle's observations are appraised against.
+    prediction: Vec<Vec<f32>>,
+    last_reward: f32,
+    /// The last cycle's appraisal.
+    pub appraisal: Appraisal,
 }
 
 impl SigmaEngine {
@@ -509,14 +522,24 @@ impl SigmaEngine {
     /// One decision cycle: elaboration (message passing to quiescence, subgoaling), then
     /// decision (select an action, or reach a none / tie / no-change impasse).
     pub fn cognitive_cycle(&mut self) -> CycleOutcome {
-        self.pop_satisfied_goals();
+        // Appraise what changed since the last cycle, before elaborating on it.
+        let open = self.goal_stack.len();
+        let progress = self.pop_satisfied_goals().len() as f32 / open.max(1) as f32;
+        let surprise = self.surprise();
+        let mut appraisal = Appraisal {
+            desirability: (progress + std::mem::take(&mut self.last_reward)).clamp(-1.0, 1.0),
+            surprise: surprise.iter().copied().fold(0.0, f32::max),
+            ..Appraisal::default()
+        };
         let Some(root) = self.goal_stack.first().and_then(|g| self.index.get(g)).copied() else {
             self.trace = None;
             self.last = None;
             self.percepts.clear();
-            return CycleOutcome::default();
+            self.appraisal = appraisal.label(false);
+            return CycleOutcome { appraisal: self.appraisal.clone(), ..CycleOutcome::default() };
         };
         self.complete_from_semantic_memory();
+        self.attended = self.attend(&surprise);
         let stacked_goals: HashSet<usize> = self
             .goal_stack
             .iter()
@@ -607,7 +630,25 @@ impl SigmaEngine {
                 *m = one_hot(usize::from(Some(v) == selected), m.len());
             }
         }
+        appraisal.control = selected.map_or(0.0, |v| p2[v][1]);
+        appraisal.familiarity = self.familiarity();
+        let stuck = decision_impasse.as_ref().is_some_and(|d| !d.resolved && d.kind != ImpasseKind::NoChange);
+        self.appraisal = appraisal.label(stuck);
+        let attended_skills = match &self.attended {
+            Some(mask) => {
+                let mut names: Vec<String> = (0..self.factors.len())
+                    .filter(|&f| mask[f])
+                    .map(|f| self.factors[f].skill.skill_name.clone())
+                    .collect();
+                names.sort();
+                names.dedup();
+                names
+            }
+            None => Vec::new(),
+        };
         let outcome = CycleOutcome {
+            appraisal: self.appraisal.clone(),
+            attended_skills,
             goal_stack: self.goal_stack.clone(),
             selected_action: selected.map(|v| self.vars[v].schema.name.clone()),
             beliefs: self
@@ -627,10 +668,42 @@ impl SigmaEngine {
             decision_impasse,
         };
         self.trace = Some(Trace { factors: active, marginals });
+        self.prediction = p2;
+        self.attended = None;
         self.episodic.record(self.goal_stack.clone(), self.working_memory(), outcome.selected_action.clone());
         self.motor.extend(outcome.selected_action.clone());
         self.percepts.clear();
         outcome
+    }
+
+    /// Per variable: how unexpected its newly observed value is (1 - last cycle's prediction).
+    fn surprise(&self) -> Vec<f32> {
+        let prev = self.last.as_ref().map(|l| &l.wm);
+        (0..self.vars.len())
+            .map(|v| {
+                let now = self.vars[v].evidence.or_else(|| {
+                    self.percepts
+                        .get(&v)
+                        .and_then(|p| p.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|m| m.0))
+                });
+                match (now, self.prediction.get(v)) {
+                    (Some(x), Some(p)) if prev.and_then(|w| w.get(v).copied().flatten()) != Some(x) => {
+                        1.0 - p.get(x).copied().unwrap_or(0.0)
+                    }
+                    _ => 0.0,
+                }
+            })
+            .collect()
+    }
+
+    /// Fraction of working memory that the closest episode shares.
+    fn familiarity(&self) -> f32 {
+        let wm = self.working_memory();
+        let Some(r) = self.episodic.recall(&self.goal_stack, &wm, |_| true) else { return 0.0 };
+        if wm.is_empty() {
+            return 0.0;
+        }
+        wm.iter().filter(|kv| r.episode.state.contains(kv)).count() as f32 / wm.len() as f32
     }
 
     /// The action of the best-matching past episode that was rewarded, if it is still one of
@@ -708,6 +781,7 @@ impl SigmaEngine {
     pub fn reinforce_factors(&mut self, reward: f32) -> Vec<([u8; 32], f32)> {
         let reward = if reward.is_finite() { reward.clamp(-1.0, 1.0) } else { 0.0 };
         self.episodic.reward_last(reward);
+        self.last_reward = reward;
         let Some(trace) = self.trace.as_ref() else { return Vec::new() };
         let mut attributions = Vec::new();
         let mut touched = HashSet::new();
@@ -910,6 +984,9 @@ impl SigmaEngine {
                 .iter()
                 .enumerate()
                 .map(|(fi, f)| {
+                    if self.attended.as_ref().is_some_and(|mask| !mask[fi]) {
+                        return f.vars.iter().map(|&v| uniform(v)).collect();
+                    }
                     let inbound: Vec<Vec<f32>> = f
                         .vars
                         .iter()
@@ -982,5 +1059,7 @@ mod tests_continuous;
 mod tests_learning;
 #[cfg(test)]
 mod tests_memory;
+#[cfg(test)]
+mod tests_mind;
 #[cfg(test)]
 mod tests_v2;
