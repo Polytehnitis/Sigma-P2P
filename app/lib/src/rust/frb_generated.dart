@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 1175433120;
+  int get rustContentHash => 340104321;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -81,6 +81,12 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
 }
 
 abstract class RustLibApi extends BaseApi {
+  Future<List<ActionRule>> crateApiAgentActionRules();
+
+  Future<String?> crateApiAgentCancelPendingAction();
+
+  Future<String> crateApiAgentConfirmAction({required String token});
+
   Future<String> crateApiAgentCreatePairingCode();
 
   Future<AgentInfo> crateApiAgentInitAgent({
@@ -102,6 +108,8 @@ abstract class RustLibApi extends BaseApi {
     required List<String> activeGoals,
   });
 
+  Future<void> crateApiAgentSetActionRules({required List<ActionRule> rules});
+
   Future<int> crateApiAgentSyncNow();
 
   Future<String> crateApiAgentTeachAndShareSkill({
@@ -110,6 +118,8 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<void> crateApiAgentTrustPeerAuthor({required String hexPubkey});
+
+  Future<UndoResult> crateApiAgentUndoLastAction();
 
   Future<void> crateApiAgentUnpairDevice({required String hexPubkey});
 }
@@ -123,7 +133,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   });
 
   @override
-  Future<String> crateApiAgentCreatePairingCode() {
+  Future<List<ActionRule>> crateApiAgentActionRules() {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
@@ -132,6 +142,88 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             generalizedFrbRustBinding,
             serializer,
             funcId: 1,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_action_rule,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiAgentActionRulesConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentActionRulesConstMeta =>
+      const TaskConstMeta(debugName: "action_rules", argNames: []);
+
+  @override
+  Future<String?> crateApiAgentCancelPendingAction() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 2,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_String,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiAgentCancelPendingActionConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentCancelPendingActionConstMeta =>
+      const TaskConstMeta(debugName: "cancel_pending_action", argNames: []);
+
+  @override
+  Future<String> crateApiAgentConfirmAction({required String token}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(token, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 3,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiAgentConfirmActionConstMeta,
+        argValues: [token],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentConfirmActionConstMeta =>
+      const TaskConstMeta(debugName: "confirm_action", argNames: ["token"]);
+
+  @override
+  Future<String> crateApiAgentCreatePairingCode() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 4,
             port: port_,
           );
         },
@@ -165,7 +257,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 2,
+            funcId: 5,
             port: port_,
           );
         },
@@ -194,7 +286,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 3,
+            funcId: 6,
             port: port_,
           );
         },
@@ -222,7 +314,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 4,
+            funcId: 7,
             port: port_,
           );
         },
@@ -249,7 +341,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 8,
             port: port_,
           );
         },
@@ -279,7 +371,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 9,
             port: port_,
           );
         },
@@ -311,7 +403,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 10,
             port: port_,
           );
         },
@@ -333,6 +425,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiAgentSetActionRules({required List<ActionRule> rules}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_action_rule(rules, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 11,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiAgentSetActionRulesConstMeta,
+        argValues: [rules],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentSetActionRulesConstMeta =>
+      const TaskConstMeta(debugName: "set_action_rules", argNames: ["rules"]);
+
+  @override
   Future<int> crateApiAgentSyncNow() {
     return handler.executeNormal(
       NormalTask(
@@ -341,7 +461,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 12,
             port: port_,
           );
         },
@@ -373,7 +493,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 13,
             port: port_,
           );
         },
@@ -404,7 +524,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 14,
             port: port_,
           );
         },
@@ -426,6 +546,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<UndoResult> crateApiAgentUndoLastAction() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 15,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_undo_result,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiAgentUndoLastActionConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentUndoLastActionConstMeta =>
+      const TaskConstMeta(debugName: "undo_last_action", argNames: []);
+
+  @override
   Future<void> crateApiAgentUnpairDevice({required String hexPubkey}) {
     return handler.executeNormal(
       NormalTask(
@@ -435,7 +582,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 16,
             port: port_,
           );
         },
@@ -466,6 +613,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ActionRule dco_decode_action_rule(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return ActionRule(
+      action: dco_decode_String(arr[0]),
+      reverse: dco_decode_opt_String(arr[1]),
+      irreversible: dco_decode_bool(arr[2]),
+    );
+  }
+
+  @protected
   AgentInfo dco_decode_agent_info(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -491,17 +651,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  bool dco_decode_bool(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as bool;
+  }
+
+  @protected
+  ConfirmationRequest dco_decode_box_autoadd_confirmation_request(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_confirmation_request(raw);
+  }
+
+  @protected
   CognitiveStep dco_decode_cognitive_step(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return CognitiveStep(
       goalStack: dco_decode_list_String(arr[0]),
       selectedAction: dco_decode_opt_String(arr[1]),
       beliefs: dco_decode_list_belief(arr[2]),
       provenance: dco_decode_list_skill_provenance(arr[3]),
       impasse: dco_decode_opt_String(arr[4]),
+      awaitingConfirmation: dco_decode_opt_box_autoadd_confirmation_request(
+        arr[5],
+      ),
+      motorCommands: dco_decode_list_String(arr[6]),
+      undoStack: dco_decode_list_String(arr[7]),
+    );
+  }
+
+  @protected
+  ConfirmationRequest dco_decode_confirmation_request(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return ConfirmationRequest(
+      action: dco_decode_String(arr[0]),
+      token: dco_decode_String(arr[1]),
     );
   }
 
@@ -548,6 +737,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<ActionRule> dco_decode_list_action_rule(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_action_rule).toList();
+  }
+
+  @protected
   List<Belief> dco_decode_list_belief(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_belief).toList();
@@ -587,6 +782,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   String? dco_decode_opt_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_String(raw);
+  }
+
+  @protected
+  ConfirmationRequest? dco_decode_opt_box_autoadd_confirmation_request(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_confirmation_request(raw);
   }
 
   @protected
@@ -634,6 +839,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UndoResult dco_decode_undo_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return UndoResult(
+      action: dco_decode_String(arr[0]),
+      reverseAction: dco_decode_opt_String(arr[1]),
+    );
+  }
+
+  @protected
   void dco_decode_unit(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return;
@@ -651,6 +868,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_list_prim_u_8_strict(deserializer);
     return utf8.decoder.convert(inner);
+  }
+
+  @protected
+  ActionRule sse_decode_action_rule(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_action = sse_decode_String(deserializer);
+    var var_reverse = sse_decode_opt_String(deserializer);
+    var var_irreversible = sse_decode_bool(deserializer);
+    return ActionRule(
+      action: var_action,
+      reverse: var_reverse,
+      irreversible: var_irreversible,
+    );
   }
 
   @protected
@@ -675,6 +905,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  bool sse_decode_bool(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getUint8() != 0;
+  }
+
+  @protected
+  ConfirmationRequest sse_decode_box_autoadd_confirmation_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_confirmation_request(deserializer));
+  }
+
+  @protected
   CognitiveStep sse_decode_cognitive_step(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_goalStack = sse_decode_list_String(deserializer);
@@ -682,13 +926,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_beliefs = sse_decode_list_belief(deserializer);
     var var_provenance = sse_decode_list_skill_provenance(deserializer);
     var var_impasse = sse_decode_opt_String(deserializer);
+    var var_awaitingConfirmation =
+        sse_decode_opt_box_autoadd_confirmation_request(deserializer);
+    var var_motorCommands = sse_decode_list_String(deserializer);
+    var var_undoStack = sse_decode_list_String(deserializer);
     return CognitiveStep(
       goalStack: var_goalStack,
       selectedAction: var_selectedAction,
       beliefs: var_beliefs,
       provenance: var_provenance,
       impasse: var_impasse,
+      awaitingConfirmation: var_awaitingConfirmation,
+      motorCommands: var_motorCommands,
+      undoStack: var_undoStack,
     );
+  }
+
+  @protected
+  ConfirmationRequest sse_decode_confirmation_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_action = sse_decode_String(deserializer);
+    var var_token = sse_decode_String(deserializer);
+    return ConfirmationRequest(action: var_action, token: var_token);
   }
 
   @protected
@@ -730,6 +991,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <String>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_String(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<ActionRule> sse_decode_list_action_rule(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <ActionRule>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_action_rule(deserializer));
     }
     return ans_;
   }
@@ -812,6 +1085,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ConfirmationRequest? sse_decode_opt_box_autoadd_confirmation_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_confirmation_request(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   PredicateDemo sse_decode_predicate_demo(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_name = sse_decode_String(deserializer);
@@ -853,14 +1139,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  void sse_decode_unit(SseDeserializer deserializer) {
+  UndoResult sse_decode_undo_result(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_action = sse_decode_String(deserializer);
+    var var_reverseAction = sse_decode_opt_String(deserializer);
+    return UndoResult(action: var_action, reverseAction: var_reverseAction);
   }
 
   @protected
-  bool sse_decode_bool(SseDeserializer deserializer) {
+  void sse_decode_unit(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getUint8() != 0;
   }
 
   @protected
@@ -879,6 +1167,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_action_rule(ActionRule self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.action, serializer);
+    sse_encode_opt_String(self.reverse, serializer);
+    sse_encode_bool(self.irreversible, serializer);
+  }
+
+  @protected
   void sse_encode_agent_info(AgentInfo self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.endpointId, serializer);
@@ -894,6 +1190,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_bool(bool self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putUint8(self ? 1 : 0);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_confirmation_request(
+    ConfirmationRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_confirmation_request(self, serializer);
+  }
+
+  @protected
   void sse_encode_cognitive_step(CognitiveStep self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_String(self.goalStack, serializer);
@@ -901,6 +1212,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_list_belief(self.beliefs, serializer);
     sse_encode_list_skill_provenance(self.provenance, serializer);
     sse_encode_opt_String(self.impasse, serializer);
+    sse_encode_opt_box_autoadd_confirmation_request(
+      self.awaitingConfirmation,
+      serializer,
+    );
+    sse_encode_list_String(self.motorCommands, serializer);
+    sse_encode_list_String(self.undoStack, serializer);
+  }
+
+  @protected
+  void sse_encode_confirmation_request(
+    ConfirmationRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.action, serializer);
+    sse_encode_String(self.token, serializer);
   }
 
   @protected
@@ -938,6 +1265,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_String(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_action_rule(
+    List<ActionRule> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_action_rule(item, serializer);
     }
   }
 
@@ -1014,6 +1353,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_confirmation_request(
+    ConfirmationRequest? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_confirmation_request(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_predicate_demo(PredicateDemo self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.name, serializer);
@@ -1051,13 +1403,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  void sse_encode_unit(void self, SseSerializer serializer) {
+  void sse_encode_undo_result(UndoResult self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.action, serializer);
+    sse_encode_opt_String(self.reverseAction, serializer);
   }
 
   @protected
-  void sse_encode_bool(bool self, SseSerializer serializer) {
+  void sse_encode_unit(void self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putUint8(self ? 1 : 0);
   }
 }

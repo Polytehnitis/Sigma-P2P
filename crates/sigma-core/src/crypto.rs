@@ -1,6 +1,6 @@
 //! Ed25519 author identity and canonical skill signatures.
 
-use crate::{Skill, SkillBody, SkillPackage};
+use crate::{ActionManifest, Skill, SkillBody, SkillPackage};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 /// A node's long-lived Ed25519 identity. The same key is the node's iroh `EndpointId`.
@@ -34,6 +34,17 @@ impl NodeIdentity {
     pub fn sign(&self, skill: &mut Skill) {
         skill.author_pubkey = self.author_pubkey();
         skill.signature = self.0.sign(any_skill_digest(skill).as_bytes()).to_bytes().to_vec();
+    }
+
+    /// Stamps an action manifest with this author's key and signs its digest.
+    pub fn sign_actions(&self, manifest: &mut ActionManifest) {
+        manifest.author_pubkey = self.author_pubkey();
+        manifest.signature = self.0.sign(actions_digest(manifest).as_bytes()).to_bytes().to_vec();
+    }
+
+    /// Checks the Ed25519 signature of an action manifest against its `author_pubkey`.
+    pub fn verify_actions(manifest: &ActionManifest) -> Result<(), &'static str> {
+        verify(&manifest.author_pubkey, &manifest.signature, actions_digest(manifest))
     }
 
     /// Checks the Ed25519 signature of `skill` against its `author_pubkey`.
@@ -75,6 +86,13 @@ pub fn any_skill_digest(s: &Skill) -> blake3::Hash {
             blake3::Hasher::new_derive_key("sigma-skill v2").update(&bytes).finalize()
         }
     }
+}
+
+/// BLAKE3 over the postcard encoding of `(version, specs)` under the key-derivation context
+/// `sigma-actions v1`, so a manifest signature never verifies as a skill signature.
+pub fn actions_digest(m: &ActionManifest) -> blake3::Hash {
+    let bytes = postcard::to_allocvec(&(m.version, &m.specs)).expect("in-memory encoding cannot fail");
+    blake3::Hasher::new_derive_key("sigma-actions v1").update(&bytes).finalize()
 }
 
 pub fn to_hex(bytes: &[u8]) -> String {

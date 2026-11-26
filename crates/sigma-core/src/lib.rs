@@ -9,6 +9,7 @@
 //! satisfied once working memory holds it `1`, and until then it is assumed `0`
 //! (closed world) when choosing an action.
 
+pub mod actions;
 pub mod crypto;
 pub mod memory;
 pub mod mind;
@@ -22,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+pub use actions::{ActionManifest, ActionSpec, ConfirmationGate, PendingAction, Undone};
 pub use crypto::NodeIdentity;
 pub use memory::{Episode, EpisodicMemory, SemanticMemory, SemanticRecall};
 pub use mind::{Appraisal, Emotion, MindModel, OtherAgent};
@@ -194,6 +196,9 @@ pub struct CycleOutcome {
     pub appraisal: Appraisal,
     /// Skills that took part in elaboration, when an attention budget is set.
     pub attended_skills: Vec<String>,
+    /// The selected action needs the user's confirmation: it is held here instead of
+    /// entering the motor buffer (see [`ConfirmationGate`]).
+    pub awaiting_confirmation: Option<PendingAction>,
 }
 
 /// A particle message over a continuous predicate: weighted samples of its value.
@@ -260,6 +265,11 @@ pub struct SigmaEngine {
     exact: HashMap<usize, f32>,
     /// Particle messages in the perception buffer.
     particle_percepts: HashMap<usize, Particles>,
+    /// Actions without an [`ActionSpec`] need confirmation too (default: only actions
+    /// marked `irreversible` do).
+    pub confirm_unlisted_actions: bool,
+    /// Action specs, the undo stack and the action awaiting confirmation.
+    safety: actions::ActionSafety,
 }
 
 impl SigmaEngine {
@@ -500,7 +510,8 @@ impl SigmaEngine {
         Ok((0..v.schema.domain_size).map(|i| lo + (i as f32 + 0.5) * w).collect())
     }
 
-    /// Drains the motor buffer: every action selected since the last call, oldest first.
+    /// Drains the motor buffer: every action selected (and, where needed, confirmed) since
+    /// the last call, oldest first. Actuators take actions only from here.
     pub fn take_motor_commands(&mut self) -> Vec<String> {
         std::mem::take(&mut self.motor)
     }
@@ -679,7 +690,7 @@ impl SigmaEngine {
             }
             None => Vec::new(),
         };
-        let outcome = CycleOutcome {
+        let mut outcome = CycleOutcome {
             appraisal: self.appraisal.clone(),
             attended_skills,
             goal_stack: self.goal_stack.clone(),
@@ -699,12 +710,15 @@ impl SigmaEngine {
                 .collect(),
             impasse: self.detect_structural_impasse(),
             decision_impasse,
+            awaiting_confirmation: None,
         };
         self.trace = Some(Trace { factors: active, marginals });
         self.prediction = p2;
         self.attended = None;
         self.episodic.record(self.goal_stack.clone(), self.working_memory(), outcome.selected_action.clone());
-        self.motor.extend(outcome.selected_action.clone());
+        if let Some(action) = outcome.selected_action.clone() {
+            outcome.awaiting_confirmation = self.dispatch(action);
+        }
         self.percepts.clear();
         self.particle_percepts.clear();
         outcome
@@ -1105,6 +1119,8 @@ pub(crate) fn normalize(mut v: Vec<f32>) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_actions;
 #[cfg(test)]
 mod tests_continuous;
 #[cfg(test)]
