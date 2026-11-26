@@ -12,6 +12,7 @@
 pub mod crypto;
 pub mod memory;
 pub mod mind;
+pub mod particles;
 pub mod program;
 pub mod storage;
 
@@ -141,6 +142,8 @@ pub struct FactorNode {
     pub learnable: bool,
     /// Slot the table is a conditional distribution over (see `Conditional::normal`).
     pub normal: Option<usize>,
+    /// Analytic (piecewise-linear or Gaussian) form, evaluated at particle points.
+    pub analytic: Option<Arc<program::Analytic>>,
 }
 
 /// A broken chain: `missing_predicate` (reached from `goal`) has no skill linking it to an action.
@@ -246,6 +249,15 @@ pub struct SigmaEngine {
     last_reward: f32,
     /// The last cycle's appraisal.
     pub appraisal: Appraisal,
+    /// Particles per continuous variable for particle-based message passing (`None`: messages
+    /// over continuous variables stay piecewise-constant over regions).
+    pub particle_count: Option<usize>,
+    /// Seed for particle sampling, so inference is reproducible for a given state.
+    pub particle_seed: u64,
+    /// Exact values behind continuous evidence (`set_value`).
+    exact: HashMap<usize, f32>,
+    /// Particle messages in the perception buffer.
+    particle_percepts: HashMap<usize, Particles>,
 }
 
 impl SigmaEngine {
@@ -319,6 +331,7 @@ impl SigmaEngine {
                 utility_score: 0.5,
                 learnable: g.learnable,
                 normal: g.normal,
+                analytic: g.analytic,
             });
         }
         self.skills.push(skill);
@@ -368,12 +381,14 @@ impl SigmaEngine {
             return Err("value outside predicate domain");
         }
         self.vars[v].evidence = Some(value);
+        self.exact.remove(&v);
         Ok(())
     }
 
     pub fn clear_evidence(&mut self, name: &str) {
         if let Some(&v) = self.index.get(name) {
             self.vars[v].evidence = None;
+            self.exact.remove(&v);
         }
     }
 
@@ -387,6 +402,7 @@ impl SigmaEngine {
             return Err("invalid percept distribution");
         }
         self.percepts.insert(v, normalize(distribution.to_vec()));
+        self.particle_percepts.remove(&v);
         Ok(())
     }
 
@@ -401,10 +417,12 @@ impl SigmaEngine {
         Ok((((x - lo) / (hi - lo) * bins as f32).floor().max(0.0) as usize).min(bins - 1))
     }
 
-    /// Sets a continuous predicate to the region containing `x`.
+    /// Sets a continuous predicate to `x` (its region, and the exact value for particles).
     pub fn set_value(&mut self, name: &str, x: f32) -> Result<(), &'static str> {
         let r = self.region_of(name, x)?;
-        self.set_evidence(name, r)
+        self.set_evidence(name, r)?;
+        self.exact.insert(self.index[name], x);
+        Ok(())
     }
 
     /// Perceives a noisy continuous reading: a normal percept centred on `x`.
@@ -417,15 +435,21 @@ impl SigmaEngine {
         self.perceive(name, &dist)
     }
 
-    /// Perceives a particle message (weighted samples), projected onto the regions.
+    /// Perceives a particle message (weighted samples). With `particle_count` set it enters
+    /// message passing as particles; otherwise it is projected onto the regions.
     pub fn perceive_particles(&mut self, name: &str, particles: &Particles) -> Result<(), &'static str> {
         let mut dist = vec![0.0; self.centres(name)?.len()];
+        if particles.values.len() != particles.weights.len() {
+            return Err("particle values and weights differ in length");
+        }
         for (&x, &w) in particles.values.iter().zip(&particles.weights) {
             if w.is_finite() && w > 0.0 {
                 dist[self.region_of(name, x)?] += w;
             }
         }
-        self.perceive(name, &dist)
+        self.perceive(name, &dist)?;
+        self.particle_percepts.insert(self.index[name], particles.clone());
+        Ok(())
     }
 
     /// Posterior of `name` given working memory alone (no goal assumptions).
@@ -436,6 +460,9 @@ impl SigmaEngine {
 
     /// Posterior mean of a continuous predicate.
     pub fn expected_value(&self, name: &str) -> Option<f32> {
+        if self.particle_count.is_some() {
+            return self.particle_belief(name).map(|p| p.mean());
+        }
         let centres = self.centres(name).ok()?;
         Some(self.posterior(name)?.iter().zip(&centres).map(|(p, c)| p * c).sum())
     }
@@ -445,6 +472,9 @@ impl SigmaEngine {
     pub fn sample_particles(&self, name: &str, n: usize, rng: &mut impl rand::Rng) -> Option<Particles> {
         let v = &self.vars[*self.index.get(name)?];
         let (lo, hi) = v.range?;
+        if self.particle_count.is_some() {
+            return Some(self.particle_belief(name)?.resample(n, rng));
+        }
         let post = self.posterior(name)?;
         let width = (hi - lo) / post.len() as f32;
         let values = (0..n)
@@ -535,6 +565,7 @@ impl SigmaEngine {
             self.trace = None;
             self.last = None;
             self.percepts.clear();
+            self.particle_percepts.clear();
             self.appraisal = appraisal.label(false);
             return CycleOutcome { appraisal: self.appraisal.clone(), ..CycleOutcome::default() };
         };
@@ -673,6 +704,7 @@ impl SigmaEngine {
         self.episodic.record(self.goal_stack.clone(), self.working_memory(), outcome.selected_action.clone());
         self.motor.extend(outcome.selected_action.clone());
         self.percepts.clear();
+        self.particle_percepts.clear();
         outcome
     }
 
@@ -959,6 +991,11 @@ impl SigmaEngine {
     /// evidence. A `Condition` slot never receives messages from its factor, and an `Action`
     /// slot never sends any into it.
     fn infer(&self, clamp: impl Fn(usize) -> Option<usize>) -> Vec<Vec<f32>> {
+        if let Some(n) = self.particle_count {
+            if let Some((beliefs, _)) = self.infer_particles(&clamp, n) {
+                return beliefs;
+            }
+        }
         let (prior, msgs) = self.propagate(clamp);
         (0..self.vars.len()).map(|v| self.belief(v, &prior, &msgs, None)).collect()
     }
@@ -966,7 +1003,15 @@ impl SigmaEngine {
     /// Runs message passing; returns each variable's prior and the final factor-to-variable messages.
     #[allow(clippy::type_complexity)]
     fn propagate(&self, clamp: impl Fn(usize) -> Option<usize>) -> (Vec<Vec<f32>>, Vec<Vec<Vec<f32>>>) {
-        let fixed: Vec<Vec<f32>> = (0..self.vars.len())
+        let prior = self.grid_prior(&clamp);
+        let tables: Vec<&ArrayD<f32>> = self.factors.iter().map(|f| &f.table).collect();
+        let msgs = self.message_passing(&prior, &tables);
+        (prior, msgs)
+    }
+
+    /// Each variable's prior over its regions/values: evidence or a clamp, else a percept.
+    fn grid_prior(&self, clamp: &impl Fn(usize) -> Option<usize>) -> Vec<Vec<f32>> {
+        (0..self.vars.len())
             .map(|v| {
                 let d = self.vars[v].schema.domain_size;
                 match self.vars[v].evidence.or_else(|| clamp(v)) {
@@ -974,8 +1019,13 @@ impl SigmaEngine {
                     None => self.percepts.get(&v).cloned().unwrap_or_else(|| vec![1.0; d]),
                 }
             })
-            .collect();
-        let uniform = |v: usize| normalize(vec![1.0; self.vars[v].schema.domain_size]);
+            .collect()
+    }
+
+    /// Loopy sum-product over `tables` (one per factor, indexed like `prior`'s domains).
+    fn message_passing(&self, prior: &[Vec<f32>], tables: &[&ArrayD<f32>]) -> Vec<Vec<Vec<f32>>> {
+        let fixed = prior;
+        let uniform = |v: usize| normalize(vec![1.0; prior[v].len()]);
         let mut msgs: Vec<Vec<Vec<f32>>> =
             self.factors.iter().map(|f| f.vars.iter().map(|&v| uniform(v)).collect()).collect();
         for _ in 0..BP_ITERS {
@@ -993,7 +1043,7 @@ impl SigmaEngine {
                         .enumerate()
                         .map(|(s, &v)| match f.kinds[s] {
                             PatternKind::Action => uniform(v),
-                            _ => self.belief(v, &fixed, &msgs, Some((fi, s))),
+                            _ => self.belief(v, fixed, &msgs, Some((fi, s))),
                         })
                         .collect();
                     (0..f.vars.len())
@@ -1002,7 +1052,7 @@ impl SigmaEngine {
                                 return uniform(f.vars[s]);
                             }
                             let mut out = vec![0.0; inbound[s].len()];
-                            for (idx, &w) in f.table.indexed_iter() {
+                            for (idx, &w) in tables[fi].indexed_iter() {
                                 out[idx[s]] +=
                                     (0..inbound.len()).filter(|&j| j != s).fold(w, |acc, j| acc * inbound[j][idx[j]]);
                             }
@@ -1022,7 +1072,7 @@ impl SigmaEngine {
                 break;
             }
         }
-        (fixed, msgs)
+        msgs
     }
 
     fn belief(&self, v: usize, prior: &[Vec<f32>], msgs: &[Vec<Vec<f32>>], skip: Option<(usize, usize)>) -> Vec<f32> {
@@ -1061,5 +1111,7 @@ mod tests_learning;
 mod tests_memory;
 #[cfg(test)]
 mod tests_mind;
+#[cfg(test)]
+mod tests_particles;
 #[cfg(test)]
 mod tests_v2;
