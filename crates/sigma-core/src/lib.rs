@@ -15,6 +15,7 @@ pub mod mind;
 pub mod particles;
 pub mod program;
 pub mod storage;
+pub mod sync;
 
 use ndarray::{ArrayD, Dimension, IxDyn};
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,7 @@ pub use program::{
     TypeKind,
 };
 pub use storage::FactorStore;
+pub use sync::{SyncReport, SyncState};
 
 /// Largest factor value a skill may carry.
 pub const MAX_FACTOR_VALUE: f32 = 100.0;
@@ -1113,5 +1115,7 @@ mod tests_memory;
 mod tests_mind;
 #[cfg(test)]
 mod tests_particles;
+#[cfg(test)]
+mod tests_sync;
 #[cfg(test)]
 mod tests_v2;

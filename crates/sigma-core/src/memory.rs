@@ -3,6 +3,7 @@
 //! recalled by Bayesian partial matching against a cue, as in Sigma.
 
 use serde::{Deserialize, Serialize};
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, VecDeque};
 
 /// Episodes kept before the oldest is forgotten.
@@ -31,10 +32,36 @@ pub struct EpisodeRecall {
     pub confidence: f32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Episodes are timestamped with a Lamport clock, so replicas of one memory on several of the
+/// user's devices can be merged (see [`merge`](Self::merge)) and still order sensibly.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EpisodicMemory {
     pub episodes: VecDeque<Episode>,
     clock: u64,
+    /// Identity of the episode this replica recorded last (not persisted), so feedback never
+    /// lands on an episode merged in from another device.
+    #[serde(skip)]
+    last: Option<Vec<u8>>,
+}
+
+impl PartialEq for EpisodicMemory {
+    fn eq(&self, other: &Self) -> bool {
+        self.episodes == other.episodes && self.clock == other.clock
+    }
+}
+
+/// What makes two episodes the same one: everything but the (later attached) reward.
+fn identity(e: &Episode) -> Vec<u8> {
+    postcard::to_allocvec(&(e.time, &e.goals, &e.state, &e.action)).expect("in-memory encoding cannot fail")
+}
+
+/// Between two copies of one episode, the rewarded one (then the larger reward) wins.
+fn preferred(a: Episode, b: Episode) -> Episode {
+    let rewarded = |e: &Episode| e.reward != 0.0;
+    match rewarded(&a).cmp(&rewarded(&b)).then(a.reward.total_cmp(&b.reward)) {
+        std::cmp::Ordering::Less => b,
+        _ => a,
+    }
 }
 
 impl EpisodicMemory {
@@ -43,14 +70,43 @@ impl EpisodicMemory {
             self.episodes.pop_front();
         }
         self.clock += 1;
-        self.episodes.push_back(Episode { time: self.clock, goals, state, action, reward: 0.0 });
+        let episode = Episode { time: self.clock, goals, state, action, reward: 0.0 };
+        self.last = Some(identity(&episode));
+        self.episodes.push_back(episode);
     }
 
-    /// Attaches feedback to the most recent episode.
+    /// Attaches feedback to the episode this replica recorded last (after a restart: the newest).
     pub fn reward_last(&mut self, reward: f32) {
-        if let Some(e) = self.episodes.back_mut() {
+        let e = match &self.last {
+            Some(id) => self.episodes.iter_mut().rev().find(|e| identity(e) == *id),
+            None => self.episodes.back_mut(),
+        };
+        if let Some(e) = e {
             e.reward = reward;
         }
+    }
+
+    /// CRDT join with another replica: the union of both, newest [`EPISODIC_CAPACITY`] kept.
+    /// Commutative, associative and idempotent, so devices converge in any sync order.
+    /// Returns whether `self` changed.
+    pub fn merge(&mut self, other: &EpisodicMemory) -> bool {
+        let mut all: BTreeMap<(u64, Vec<u8>), Episode> = BTreeMap::new();
+        for e in self.episodes.iter().chain(&other.episodes).cloned() {
+            match all.entry((e.time, identity(&e))) {
+                Entry::Vacant(v) => _ = v.insert(e),
+                Entry::Occupied(mut o) => {
+                    let old = o.get().clone();
+                    o.insert(preferred(old, e));
+                }
+            }
+        }
+        let skip = all.len().saturating_sub(EPISODIC_CAPACITY);
+        let episodes: VecDeque<Episode> = all.into_values().skip(skip).collect();
+        let clock = self.clock.max(other.clock);
+        let changed = episodes != self.episodes || clock != self.clock;
+        self.episodes = episodes;
+        self.clock = clock;
+        changed
     }
 
     /// The episode that best explains `cue` (goals plus values), with recency as the prior.
@@ -122,6 +178,29 @@ impl SemanticMemory {
             }
             counts[*x] += 1.0;
         }
+    }
+
+    /// CRDT join with another replica: every count becomes the larger of the two (a max-register
+    /// per count). Re-syncing never double-counts; learning of the same concept on two devices
+    /// while they are apart keeps the larger tally. Returns whether `self` changed.
+    pub fn merge(&mut self, other: &SemanticMemory) -> bool {
+        let before = self.clone();
+        for (name, theirs) in &other.concepts {
+            let mine = self.concepts.entry(name.clone()).or_default();
+            mine.count = mine.count.max(theirs.count);
+            for (f, counts) in &theirs.features {
+                let own = mine.features.entry(f.clone()).or_default();
+                if own.len() < counts.len() {
+                    own.resize(counts.len(), 0.0);
+                }
+                own.iter_mut().zip(counts).for_each(|(a, b)| *a = a.max(*b));
+            }
+        }
+        for (f, d) in &other.domains {
+            let own = self.domains.entry(f.clone()).or_insert(0);
+            *own = (*own).max(*d);
+        }
+        *self != before
     }
 
     /// P(value | category) with add-one smoothing.
