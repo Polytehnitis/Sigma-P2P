@@ -27,6 +27,8 @@ CognitiveStep step({
     emotion: emotion,
   ),
   attendedSkills: attended,
+  motorCommands: const [],
+  undoStack: const [],
 );
 
 void main() {

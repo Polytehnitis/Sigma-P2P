@@ -28,6 +28,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
+  ActionRule dco_decode_action_rule(dynamic raw);
+
+  @protected
   AgentInfo dco_decode_agent_info(dynamic raw);
 
   @protected
@@ -40,10 +43,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool dco_decode_bool(dynamic raw);
 
   @protected
+  ConfirmationRequest dco_decode_box_autoadd_confirmation_request(dynamic raw);
+
+  @protected
   DecisionImpasse dco_decode_box_autoadd_decision_impasse(dynamic raw);
 
   @protected
   CognitiveStep dco_decode_cognitive_step(dynamic raw);
+
+  @protected
+  ConfirmationRequest dco_decode_confirmation_request(dynamic raw);
 
   @protected
   DecisionImpasse dco_decode_decision_impasse(dynamic raw);
@@ -70,6 +79,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
+  List<ActionRule> dco_decode_list_action_rule(dynamic raw);
+
+  @protected
   List<Belief> dco_decode_list_belief(dynamic raw);
 
   @protected
@@ -91,6 +103,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? dco_decode_opt_String(dynamic raw);
 
   @protected
+  ConfirmationRequest? dco_decode_opt_box_autoadd_confirmation_request(
+    dynamic raw,
+  );
+
+  @protected
   DecisionImpasse? dco_decode_opt_box_autoadd_decision_impasse(dynamic raw);
 
   @protected
@@ -109,6 +126,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int dco_decode_u_8(dynamic raw);
 
   @protected
+  UndoResult dco_decode_undo_result(dynamic raw);
+
+  @protected
   void dco_decode_unit(dynamic raw);
 
   @protected
@@ -116,6 +136,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   String sse_decode_String(SseDeserializer deserializer);
+
+  @protected
+  ActionRule sse_decode_action_rule(SseDeserializer deserializer);
 
   @protected
   AgentInfo sse_decode_agent_info(SseDeserializer deserializer);
@@ -130,12 +153,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
+  ConfirmationRequest sse_decode_box_autoadd_confirmation_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DecisionImpasse sse_decode_box_autoadd_decision_impasse(
     SseDeserializer deserializer,
   );
 
   @protected
   CognitiveStep sse_decode_cognitive_step(SseDeserializer deserializer);
+
+  @protected
+  ConfirmationRequest sse_decode_confirmation_request(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DecisionImpasse sse_decode_decision_impasse(SseDeserializer deserializer);
@@ -164,6 +197,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
+  List<ActionRule> sse_decode_list_action_rule(SseDeserializer deserializer);
+
+  @protected
   List<Belief> sse_decode_list_belief(SseDeserializer deserializer);
 
   @protected
@@ -189,6 +225,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? sse_decode_opt_String(SseDeserializer deserializer);
 
   @protected
+  ConfirmationRequest? sse_decode_opt_box_autoadd_confirmation_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DecisionImpasse? sse_decode_opt_box_autoadd_decision_impasse(
     SseDeserializer deserializer,
   );
@@ -209,6 +250,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int sse_decode_u_8(SseDeserializer deserializer);
 
   @protected
+  UndoResult sse_decode_undo_result(SseDeserializer deserializer);
+
+  @protected
   void sse_decode_unit(SseDeserializer deserializer);
 
   @protected
@@ -219,6 +263,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_String(String self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_action_rule(ActionRule self, SseSerializer serializer);
 
   @protected
   void sse_encode_agent_info(AgentInfo self, SseSerializer serializer);
@@ -233,6 +280,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_confirmation_request(
+    ConfirmationRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_decision_impasse(
     DecisionImpasse self,
     SseSerializer serializer,
@@ -240,6 +293,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_cognitive_step(CognitiveStep self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_confirmation_request(
+    ConfirmationRequest self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_decision_impasse(
@@ -275,6 +334,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_action_rule(
+    List<ActionRule> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_belief(List<Belief> self, SseSerializer serializer);
 
   @protected
@@ -308,6 +373,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_String(String? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_confirmation_request(
+    ConfirmationRequest? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_decision_impasse(
     DecisionImpasse? self,
     SseSerializer serializer,
@@ -330,6 +401,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_u_8(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_undo_result(UndoResult self, SseSerializer serializer);
 
   @protected
   void sse_encode_unit(void self, SseSerializer serializer);

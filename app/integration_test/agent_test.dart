@@ -45,6 +45,47 @@ void main() {
     expect(step.appraisal.control, inInclusiveRange(0, 1));
     expect(step.appraisal.desirability, inInclusiveRange(-1, 1));
 
+    expect(step.motorCommands, ['ActionSortPapers']);
+    expect(step.awaitingConfirmation, isNull);
+
+    // Undo: the action has a reverse, so it can be taken back.
+    await setActionRules(
+      rules: const [
+        ActionRule(
+          action: 'ActionSortPapers',
+          reverse: 'ActionUnsortPapers',
+          irreversible: false,
+        ),
+      ],
+    );
+    step = await runCognitiveStep(evidence: const [], activeGoals: const []);
+    expect(step.undoStack, ['ActionSortPapers']);
+    final undone = await undoLastAction();
+    expect(undone.reverseAction, 'ActionUnsortPapers');
+    await expectLater(undoLastAction(), throwsA(anything));
+
+    // Irreversible: held until the UI hands back the token it was shown.
+    await setActionRules(
+      rules: const [ActionRule(action: 'ActionSortPapers', irreversible: true)],
+    );
+    expect((await actionRules()).single.irreversible, isTrue);
+    step = await runCognitiveStep(evidence: const [], activeGoals: const []);
+    expect(step.motorCommands, isEmpty);
+    final req = step.awaitingConfirmation!;
+    expect(req.action, 'ActionSortPapers');
+    await expectLater(confirmAction(token: 'forged'), throwsA(anything));
+    step = await runCognitiveStep(evidence: const [], activeGoals: const []);
+    expect(
+      await confirmAction(token: step.awaitingConfirmation!.token),
+      'ActionSortPapers',
+    );
+    await expectLater(
+      confirmAction(token: step.awaitingConfirmation!.token),
+      throwsA(anything),
+    );
+    expect(req.token, isNot(step.awaitingConfirmation!.token));
+    await setActionRules(rules: const []);
+
     final fb = await provideFeedback(reward: 1);
     expect(fb.evictedSkills, isEmpty);
     expect(fb.reputations.single.reputation, 1.0);

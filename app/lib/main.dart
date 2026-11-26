@@ -48,6 +48,8 @@ class _AgentPageState extends State<AgentPage> {
   AgentInfo? _info;
   List<String> _devices = const [];
   CognitiveStep? _step;
+  ConfirmationRequest? _pending;
+  List<String> _undoStack = const [];
   bool _busy = false;
 
   /// Desktop avatar mode: the window becomes a small always-on-top companion.
@@ -216,7 +218,11 @@ class _AgentPageState extends State<AgentPage> {
       evidence: evidence,
       activeGoals: [_goal.text],
     );
-    setState(() => _step = step);
+    setState(() {
+      _step = step;
+      _pending = step.awaitingConfirmation;
+      _undoStack = step.undoStack;
+    });
   });
 
   /// One cognitive cycle without new observations or goals (the avatar's own pace).
@@ -225,8 +231,56 @@ class _AgentPageState extends State<AgentPage> {
       evidence: const [],
       activeGoals: const [],
     );
-    setState(() => _step = step);
+    setState(() {
+      _step = step;
+      _pending = step.awaitingConfirmation;
+      _undoStack = step.undoStack;
+    });
   });
+
+  // The token comes only from this button: engine and skill data never carry it.
+  Future<void> _confirm(ConfirmationRequest req) => _guard(() async {
+    setState(() => _pending = null);
+    _toast('Confirmed ${await confirmAction(token: req.token)}');
+  });
+
+  Future<void> _cancelPending() => _guard(() async {
+    await cancelPendingAction();
+    setState(() => _pending = null);
+    _toast('Cancelled');
+  });
+
+  Future<void> _undo() => _guard(() async {
+    final r = await undoLastAction();
+    setState(() => _undoStack = _undoStack.sublist(0, _undoStack.length - 1));
+    _toast(
+      r.reverseAction == null
+          ? 'Withdrew ${r.action}'
+          : 'Undid ${r.action} with ${r.reverseAction}',
+    );
+  });
+
+  Future<void> _editRules() async {
+    final rules = await actionRules();
+    if (!mounted) return;
+    final text = await showDialog<String>(
+      context: context,
+      builder: (_) => RulesDialog(
+        initial: rules
+            .map(
+              (r) => r.irreversible
+                  ? '!${r.action}'
+                  : '${r.action} > ${r.reverse ?? ''}',
+            )
+            .join('\n'),
+      ),
+    );
+    if (text == null) return;
+    await _guard(() async {
+      await setActionRules(rules: parseActionRules(text));
+      _toast('Action rules saved');
+    });
+  }
 
   Future<void> _feedback(double reward) => _guard(() async {
     final r = await provideFeedback(reward: reward);
@@ -273,7 +327,12 @@ class _AgentPageState extends State<AgentPage> {
   Widget _buildAvatar() {
     final avatar = SigmaAvatar(
       mood: AvatarMood.of(_step, online: _info != null),
-      note: _note,
+      note:
+          _note ??
+          (_pending == null
+              ? null
+              : 'May I ${humanize(_pending!.action)}? '
+                    'Double-click me to confirm.'),
       busy: _busy,
       onThink: _info == null ? null : (_step == null ? _run : _think),
       onOpen: _exitAvatar,
@@ -415,10 +474,20 @@ class _AgentPageState extends State<AgentPage> {
             _section('Goal', [
               _field(_goal, 'Top-level goal'),
               _field(_evidence, 'Observations, e.g. SubgoalMountNAS=1'),
-              FilledButton.icon(
-                onPressed: _busy ? null : _run,
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('Run cognitive step'),
+              Wrap(
+                spacing: 8,
+                children: [
+                  FilledButton.icon(
+                    onPressed: _busy ? null : _run,
+                    icon: const Icon(Icons.play_arrow),
+                    label: const Text('Run cognitive step'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _busy ? null : _editRules,
+                    icon: const Icon(Icons.shield),
+                    label: const Text('Action rules'),
+                  ),
+                ],
               ),
             ]),
           if (step != null) ...[
@@ -453,6 +522,37 @@ class _AgentPageState extends State<AgentPage> {
                   ],
                 ),
               ),
+              if (_pending case final req?)
+                Card(
+                  color: Theme.of(context).colorScheme.tertiaryContainer,
+                  child: ListTile(
+                    leading: const Icon(Icons.warning_amber),
+                    title: Text('Confirm ${req.action}?'),
+                    subtitle: const Text('This action cannot be undone.'),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        TextButton(
+                          onPressed: _busy ? null : _cancelPending,
+                          child: const Text('Cancel'),
+                        ),
+                        FilledButton(
+                          onPressed: _busy ? null : () => _confirm(req),
+                          child: const Text('Confirm'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              if (_undoStack.isNotEmpty)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: OutlinedButton.icon(
+                    onPressed: _busy ? null : _undo,
+                    icon: const Icon(Icons.undo),
+                    label: Text('Undo ${_undoStack.last}'),
+                  ),
+                ),
               if (step.impasse != null)
                 Card(
                   color: Theme.of(context).colorScheme.errorContainer,
@@ -642,6 +742,58 @@ class _TeachDialogState extends State<TeachDialog> {
           ],
         )),
         child: const Text('Sign & share'),
+      ),
+    ],
+  );
+}
+
+/// Parses one rule per line: `Action > Reverse` (undoable) or `!Action` (irreversible).
+List<ActionRule> parseActionRules(String text) => [
+  for (final line in text.split('\n').map((l) => l.trim()))
+    if (line.startsWith('!'))
+      ActionRule(action: line.substring(1).trim(), irreversible: true)
+    else if (line.contains('>'))
+      ActionRule(
+        action: line.split('>')[0].trim(),
+        reverse: line.split('>')[1].trim(),
+        irreversible: false,
+      ),
+];
+
+class RulesDialog extends StatefulWidget {
+  const RulesDialog({super.key, required this.initial});
+  final String initial;
+
+  @override
+  State<RulesDialog> createState() => _RulesDialogState();
+}
+
+class _RulesDialogState extends State<RulesDialog> {
+  late final _text = TextEditingController(text: widget.initial);
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Action rules'),
+    content: TextField(
+      controller: _text,
+      minLines: 4,
+      maxLines: 10,
+      decoration: const InputDecoration(
+        helperText:
+            'One per line. ActionMountNAS > ActionUnmountNAS makes an '
+            'action undoable; !ActionDeleteBackups always asks you first.',
+        helperMaxLines: 3,
+        border: OutlineInputBorder(),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.pop(context, _text.text),
+        child: const Text('Save'),
       ),
     ],
   );

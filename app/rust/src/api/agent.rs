@@ -3,8 +3,8 @@
 
 use anyhow::{anyhow, Context, Result};
 use sigma_core::{
-    crypto, Emotion as CoreEmotion, FactorStore, ImpasseKind, NodeIdentity, PredicateRole, PredicateSchema,
-    SigmaEngine, SkillPackage, QUARANTINE,
+    crypto, ActionManifest, ActionSpec, ConfirmationGate, Emotion as CoreEmotion, FactorStore, ImpasseKind,
+    NodeIdentity, PredicateRole, PredicateSchema, SigmaEngine, SkillPackage, QUARANTINE,
 };
 use sigma_net::{EndpointId, SkillMeshNode};
 use std::collections::BTreeMap;
@@ -17,6 +17,8 @@ struct Agent {
     identity: NodeIdentity,
     engine: Arc<Mutex<SigmaEngine>>,
     node: Arc<SkillMeshNode>,
+    /// Holds the token of the action awaiting the user's confirmation.
+    gate: Mutex<ConfirmationGate>,
 }
 
 static AGENT: OnceLock<Agent> = OnceLock::new();
@@ -130,6 +132,31 @@ pub struct CognitiveStep {
     pub appraisal: Appraisal,
     /// Skills that took part in elaboration when attention is limited (empty: all).
     pub attended_skills: Vec<String>,
+    /// The selected action is irreversible and waits for the user. Only the UI holds the
+    /// token; pass it to `confirm_action` when the user approves.
+    pub awaiting_confirmation: Option<ConfirmationRequest>,
+    /// Actions released to the actuator during this step (confirmed ones included).
+    pub motor_commands: Vec<String>,
+    /// Actions `undo_last_action` can reverse, oldest first.
+    pub undo_stack: Vec<String>,
+}
+
+pub struct ConfirmationRequest {
+    pub action: String,
+    pub token: String,
+}
+
+/// Safety rule for one action: what reverses it, or that it needs confirmation every time.
+pub struct ActionRule {
+    pub action: String,
+    pub reverse: Option<String>,
+    pub irreversible: bool,
+}
+
+pub struct UndoResult {
+    pub action: String,
+    /// The reverse action sent to the actuator, or `None` if the action had not been taken yet.
+    pub reverse_action: Option<String>,
 }
 
 pub struct FeedbackResult {
@@ -186,7 +213,8 @@ pub fn init_agent(storage_dir: String, swarm_passphrase: String, bootstrap_peers
             }
         }
     });
-    let agent = AGENT.get_or_init(|| Agent { rt, store, identity, engine, node });
+    let gate = Mutex::new(ConfirmationGate::new());
+    let agent = AGENT.get_or_init(|| Agent { rt, store, identity, engine, node, gate });
     Ok(info(agent, restored.len() as u32))
 }
 
@@ -218,8 +246,13 @@ pub fn run_cognitive_step(evidence: Vec<Evidence>, active_goals: Vec<String>) ->
         // Persisted every step so paired devices see the latest memories and goals.
         a.store.save_memories(&engine).map_err(err)?;
         a.store.save_goal_stack(&engine.goal_stack).map_err(err)?;
-        out
+        let mut gate = a.gate.lock().unwrap();
+        // A fresh single-use token per step; the previous step's prompt is superseded.
+        gate.revoke();
+        let confirmation = gate.issue(&engine).map(|(p, token)| ConfirmationRequest { action: p.action, token });
+        (out, confirmation, engine.take_motor_commands(), engine.undo_stack())
     };
+    let (out, awaiting_confirmation, motor_commands, undo_stack) = out;
     if let Some(impasse) = out.impasse.clone() {
         let node = a.node.clone();
         a.rt.spawn(async move { node.broadcast_impasse(impasse).await });
@@ -249,7 +282,65 @@ pub fn run_cognitive_step(evidence: Vec<Evidence>, active_goals: Vec<String>) ->
             emotion: out.appraisal.emotion.into(),
         },
         attended_skills: out.attended_skills,
+        awaiting_confirmation,
+        motor_commands,
+        undo_stack,
     })
+}
+
+/// Releases the action awaiting confirmation. `token` must be the one the last step showed
+/// the user; a token works once. Returns the action now sent to the actuator.
+pub fn confirm_action(token: String) -> Result<String> {
+    let a = agent()?;
+    let mut engine = a.engine.lock().unwrap();
+    let action = a.gate.lock().unwrap().confirm(&mut engine, &token).map_err(err)?;
+    engine.take_motor_commands();
+    Ok(action)
+}
+
+/// Drops the action awaiting confirmation; it is never taken.
+pub fn cancel_pending_action() -> Result<Option<String>> {
+    let a = agent()?;
+    a.gate.lock().unwrap().revoke();
+    Ok(a.engine.lock().unwrap().cancel_pending_action().map(|p| p.action))
+}
+
+/// Reverses the most recent undoable action: working memory and goals go back to when it
+/// was chosen, and its reverse action is sent to the actuator.
+pub fn undo_last_action() -> Result<UndoResult> {
+    let a = agent()?;
+    let mut engine = a.engine.lock().unwrap();
+    let undone = engine.undo().map_err(err)?;
+    engine.take_motor_commands();
+    a.store.save_goal_stack(&engine.goal_stack).map_err(err)?;
+    Ok(UndoResult { action: undone.action, reverse_action: undone.reverse_action })
+}
+
+/// This node's action safety rules.
+pub fn action_rules() -> Result<Vec<ActionRule>> {
+    let m = agent()?.store.load_action_manifest().map_err(err)?;
+    Ok(m.map(|m| m.specs)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| ActionRule { action: s.action, reverse: s.reverse, irreversible: s.irreversible })
+        .collect())
+}
+
+/// Replaces this node's action safety rules (signed by this node and persisted).
+pub fn set_action_rules(rules: Vec<ActionRule>) -> Result<()> {
+    let a = agent()?;
+    let version = a.store.load_action_manifest().map_err(err)?.map_or(1, |m| m.version + 1);
+    let specs = rules
+        .into_iter()
+        .map(|r| ActionSpec {
+            action: r.action.trim().into(),
+            reverse: r.reverse.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+            irreversible: r.irreversible,
+        })
+        .collect();
+    let manifest = ActionManifest::signed(&a.identity, version, specs);
+    a.engine.lock().unwrap().apply_action_manifest(&manifest).map_err(err)?;
+    a.store.save_action_manifest(&manifest).map_err(err)
 }
 
 fn provenance(a: &Agent, skill_name: String, author: [u8; 32]) -> SkillProvenance {
