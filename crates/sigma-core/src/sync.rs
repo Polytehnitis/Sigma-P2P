@@ -3,8 +3,8 @@
 //! Everything a device learns is one state-based CRDT, [`SyncState`]: the two long-term
 //! memories (each with its own join, see [`EpisodicMemory::merge`] and
 //! [`SemanticMemory::merge`]) plus a map of last-writer-wins registers for everything else
-//! (reputations, skills with their learned weights, predicates, the goal stack and the set of
-//! paired devices). Merging is commutative, associative and idempotent, so devices that were
+//! (reputations, skills with their learned weights, predicates, the goal stack, taught phrases
+//! and the set of paired devices). Merging is commutative, associative and idempotent, so devices that were
 //! offline converge as soon as any of them meet again, in any order. The transport (paired
 //! devices only, end-to-end encrypted) lives in `sigma-net`.
 
@@ -89,6 +89,8 @@ pub mod keys {
     pub const PREDICATE: &str = "pred/";
     pub const DEVICE: &str = "dev/";
     pub const GOALS: &str = "state/goals";
+    /// Phrases the user taught the language layer (normalized phrase -> intent).
+    pub const PHRASE: &str = "phrase/";
 
     pub fn reputation(pubkey: &[u8; 32]) -> String {
         format!("{REPUTATION}{}", crypto::to_hex(pubkey))
@@ -100,6 +102,10 @@ pub mod keys {
 
     pub fn predicate(name: &str) -> String {
         format!("{PREDICATE}{name}")
+    }
+
+    pub fn phrase(normalized: &str) -> String {
+        format!("{PHRASE}{normalized}")
     }
 
     pub fn device(pubkey: &[u8; 32]) -> String {

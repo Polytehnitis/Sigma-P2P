@@ -190,4 +190,30 @@ void main() {
     expect(b.mouthCurve, greaterThan(0));
     expect(a.mouthCurve, lessThan(0));
   });
+
+  testWidgets('the mic button listens', (tester) async {
+    var listens = 0;
+    await pumpAvatar(
+      tester,
+      SigmaAvatar(
+        mood: mood(Expression.idle, Gesture.rest),
+        onListen: () => listens++,
+        alwaysShowControls: true,
+      ),
+    );
+    await tester.tap(find.byKey(const Key('avatar-listen')));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(listens, 1);
+    await pumpAvatar(
+      tester,
+      SigmaAvatar(
+        mood: mood(Expression.idle, Gesture.rest),
+        onListen: () => listens++,
+        listening: true,
+        note: 'Listening…',
+      ),
+    );
+    expect(find.byIcon(Icons.mic), findsOneWidget);
+    expect(find.text('Listening…'), findsOneWidget);
+  });
 }

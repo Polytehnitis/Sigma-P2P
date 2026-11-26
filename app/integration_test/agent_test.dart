@@ -9,7 +9,7 @@ void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async => await RustLib.init());
 
-  test('impasse -> teach -> resolve through the FFI', () async {
+  test('impasse -> teach -> resolve through the FFI, then language', () async {
     final dir = await Directory.systemTemp.createTemp('sigma-app');
     final info = await initAgent(
       storageDir: dir.path,
@@ -85,6 +85,56 @@ void main() {
     );
     expect(req.token, isNot(step.awaitingConfirmation!.token));
     await setActionRules(rules: const []);
+
+    // Language: what the user says maps onto the agent's own predicates.
+    var heard = await interpretUtterance(
+      text: 'Tidy my desk, please',
+      recognitionConfidence: 1,
+    );
+    expect(heard.intent?.kind, IntentKind.setGoal);
+    expect(heard.intent?.predicate, 'GoalTidyDesk');
+    expect(heard.route, InterpretationRoute.fastPath);
+    heard = await interpretUtterance(
+      text: 'sort papers',
+      recognitionConfidence: 1,
+    );
+    // An action is never a language target.
+    expect(heard.intent?.predicate, isNot('ActionSortPapers'));
+    heard = await interpretUtterance(
+      text: 'yes do it',
+      recognitionConfidence: 0.9,
+    );
+    expect(heard.intent?.kind, IntentKind.confirmRequested);
+    expect(heard.confidence, closeTo(0.9, 1e-6));
+    // A taught phrase wins from then on and is listed.
+    expect(
+      await teachPhrase(
+        phrase: 'Clean up, Sigma!',
+        intent: const SpokenIntent(
+          kind: IntentKind.setGoal,
+          predicate: 'GoalTidyDesk',
+          value: 1,
+        ),
+      ),
+      'clean up sigma',
+    );
+    heard = await interpretUtterance(
+      text: 'clean up sigma',
+      recognitionConfidence: 1,
+    );
+    expect(heard.route, InterpretationRoute.taught);
+    expect((await taughtPhrases()).single.phrase, 'clean up sigma');
+    await forgetPhrase(phrase: 'clean up sigma');
+    expect(await taughtPhrases(), isEmpty);
+    await perceive(predicate: 'DeskClean', probability: 0.8);
+    await expectLater(
+      perceive(predicate: 'ActionSortPapers', probability: 1),
+      throwsA(anything),
+    );
+    await expectLater(
+      perceive(predicate: 'DeskClean', probability: 2),
+      throwsA(anything),
+    );
 
     final fb = await provideFeedback(reward: 1);
     expect(fb.evictedSkills, isEmpty);

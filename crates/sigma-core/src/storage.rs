@@ -5,8 +5,8 @@
 
 use crate::sync::{keys, next_clock, Register, Stamp, SyncReport, SyncState};
 use crate::{
-    crypto, ActionManifest, EpisodicMemory, NodeIdentity, PredicateSchema, SemanticMemory, SigmaEngine, Skill,
-    QUARANTINE,
+    crypto, language, ActionManifest, EpisodicMemory, NodeIdentity, PredicateSchema, SemanticMemory, SigmaEngine,
+    Skill, QUARANTINE,
 };
 use redb::{Database, ReadableTable, TableDefinition, WriteTransaction};
 use std::path::Path;
@@ -186,6 +186,36 @@ impl FactorStore {
         let state = self.export_sync_state()?;
         let value = state.registers.get(keys::GOALS).and_then(|r| r.value.as_deref());
         Ok(value.map(postcard::from_bytes).transpose()?.unwrap_or_default())
+    }
+
+    /// Teaches the language layer a phrase (`Some`) or forgets it (`None`). Phrases are
+    /// registers, so they reach the user's paired devices and nowhere else.
+    pub fn save_phrase(&self, phrase: &str, intent: Option<&language::Intent>) -> StoreResult<String> {
+        let mut book = self.load_phrases()?;
+        let key = match intent {
+            Some(i) => book.teach(phrase, i.clone()).ok_or("phrase is empty, too long, or too many are taught")?,
+            None => language::normalize(phrase),
+        };
+        let value = intent.map(postcard::to_allocvec).transpose()?;
+        self.write(|tx| stamp(tx, &keys::phrase(&key), value))?;
+        Ok(key)
+    }
+
+    /// Every taught phrase, this device's and those synced from paired devices. Malformed or
+    /// oversized entries are skipped.
+    pub fn load_phrases(&self) -> StoreResult<language::PhraseBook> {
+        let state = self.export_sync_state()?;
+        let mut book = language::PhraseBook::default();
+        for (key, register) in state.registers.range(keys::PHRASE.to_string()..) {
+            let Some(phrase) = key.strip_prefix(keys::PHRASE) else { break };
+            let intent = register.value.as_deref().and_then(|v| postcard::from_bytes(v).ok());
+            if let Some(intent) = intent {
+                if language::normalize(phrase) == phrase {
+                    book.teach(phrase, intent);
+                }
+            }
+        }
+        Ok(book)
     }
 
     /// Stores this node's action manifest after validating it. Only manifests authored by

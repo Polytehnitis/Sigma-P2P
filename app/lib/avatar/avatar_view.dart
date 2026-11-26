@@ -9,7 +9,7 @@ import 'avatar_painter.dart';
 /// Sigma's animated character with its speech bubble and quick controls.
 ///
 /// Click: think (run a cognitive step). Double-click: open the full app.
-/// Drag: move the window. Right-click or long-press: menu.
+/// Drag: move the window. Right-click or long-press: menu. The mic button listens.
 class SigmaAvatar extends StatefulWidget {
   const SigmaAvatar({
     super.key,
@@ -24,6 +24,8 @@ class SigmaAvatar extends StatefulWidget {
     this.autoThink,
     this.onAutoThinkChanged,
     this.alwaysShowControls = false,
+    this.onListen,
+    this.listening = false,
   });
 
   final AvatarMood mood;
@@ -41,6 +43,12 @@ class SigmaAvatar extends StatefulWidget {
 
   /// Shows the rating buttons without hovering (touch screens, tests).
   final bool alwaysShowControls;
+
+  /// Starts (or stops) listening for one spoken utterance.
+  final VoidCallback? onListen;
+
+  /// Sigma is listening: the mic button lights up and the character looks at the user.
+  final bool listening;
 
   @override
   State<SigmaAvatar> createState() => _SigmaAvatarState();
@@ -93,7 +101,11 @@ class _SigmaAvatarState extends State<SigmaAvatar>
     setState(() {
       _t += dt.clamp(0, 0.1);
       _pose = AvatarPose.lerp(_pose, target, ease);
-      _gaze = Offset.lerp(_gaze, m.gaze, ease)!;
+      _gaze = Offset.lerp(
+        _gaze,
+        widget.listening ? Offset.zero : m.gaze,
+        ease,
+      )!;
     });
   }
 
@@ -129,6 +141,11 @@ class _SigmaAvatarState extends State<SigmaAvatar>
       items: [
         if (widget.onThink != null)
           const PopupMenuItem(value: 'think', child: Text('Think now')),
+        if (widget.onListen != null)
+          PopupMenuItem(
+            value: 'listen',
+            child: Text(widget.listening ? 'Stop listening' : 'Listen'),
+          ),
         if (m.canRate && widget.onFeedback != null) ...[
           const PopupMenuItem(value: 'up', child: Text('Good choice')),
           const PopupMenuItem(value: 'down', child: Text('Bad choice')),
@@ -148,6 +165,8 @@ class _SigmaAvatarState extends State<SigmaAvatar>
     switch (choice) {
       case 'think':
         widget.onThink?.call();
+      case 'listen':
+        widget.onListen?.call();
       case 'up':
         widget.onFeedback?.call(1);
       case 'down':
@@ -243,6 +262,14 @@ class _SigmaAvatarState extends State<SigmaAvatar>
                     onPressed: () => widget.onFeedback!(-1),
                   ),
                 ],
+                if (widget.onListen != null &&
+                    (widget.listening || _hover || widget.alwaysShowControls))
+                  _RoundButton(
+                    key: const Key('avatar-listen'),
+                    icon: widget.listening ? Icons.mic : Icons.mic_none,
+                    tooltip: widget.listening ? 'Stop listening' : 'Talk to me',
+                    onPressed: widget.onListen!,
+                  ),
                 if (m.needsTeaching && widget.onTeach != null)
                   _RoundButton(
                     key: const Key('avatar-teach'),

@@ -9,7 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `agent`, `err`, `info`, `provenance`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Agent`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`, `from`, `from`, `from`, `try_from`
 
 /// Opens `<storage_dir>/sigma_memory.redb`, restores skills and joins the swarm.
 Future<AgentInfo> initAgent({
@@ -93,6 +93,44 @@ Future<List<String>> pairedDevices() =>
 /// Unpairs a device on all of the user's devices; it stops receiving private state.
 Future<void> unpairDevice({required String hexPubkey}) =>
     RustLib.instance.api.crateApiAgentUnpairDevice(hexPubkey: hexPubkey);
+
+/// Interprets what the user said (or typed) against the agent's own predicates, on this
+/// device. `recognition_confidence` is the speech recognizer's confidence; 1 for typed text.
+/// Nothing is applied: the app acts on the returned intent.
+Future<Interpretation> interpretUtterance({
+  required String text,
+  required double recognitionConfidence,
+}) => RustLib.instance.api.crateApiAgentInterpretUtterance(
+  text: text,
+  recognitionConfidence: recognitionConfidence,
+);
+
+/// Teaches a phrase so it means `intent` from now on, on all of the user's paired devices.
+/// Returns the phrase as it will be matched (normalized).
+Future<String> teachPhrase({
+  required String phrase,
+  required SpokenIntent intent,
+}) => RustLib.instance.api.crateApiAgentTeachPhrase(
+  phrase: phrase,
+  intent: intent,
+);
+
+/// Forgets a taught phrase, on all of the user's paired devices.
+Future<void> forgetPhrase({required String phrase}) =>
+    RustLib.instance.api.crateApiAgentForgetPhrase(phrase: phrase);
+
+Future<List<TaughtPhrase>> taughtPhrases() =>
+    RustLib.instance.api.crateApiAgentTaughtPhrases();
+
+/// Uncertain evidence for the next cycle only: `predicate` is true with `probability`. Used
+/// for what the user said when recognition was unsure, instead of a hard observation.
+Future<void> perceive({
+  required String predicate,
+  required double probability,
+}) => RustLib.instance.api.crateApiAgentPerceive(
+  predicate: predicate,
+  probability: probability,
+);
 
 /// Safety rule for one action: what reverses it, or that it needs confirmation every time.
 class ActionRule {
@@ -377,6 +415,73 @@ class FeedbackResult {
           evictedSkills == other.evictedSkills;
 }
 
+/// What an utterance asks for. Language never confirms an action: `ConfirmRequested` only
+/// tells the UI to point at its own Confirm button.
+enum IntentKind {
+  setGoal,
+  observe,
+  think,
+  feedback,
+  undo,
+  cancel,
+  confirmRequested,
+  teach,
+  explain,
+}
+
+class Interpretation {
+  final String normalized;
+  final SpokenIntent? intent;
+
+  /// In [0, 1], the recognizer's confidence included.
+  final double confidence;
+  final InterpretationRoute route;
+
+  /// Other likely readings, best first, for "did you mean…?".
+  final List<ScoredIntent> alternatives;
+
+  const Interpretation({
+    required this.normalized,
+    this.intent,
+    required this.confidence,
+    required this.route,
+    required this.alternatives,
+  });
+
+  @override
+  int get hashCode =>
+      normalized.hashCode ^
+      intent.hashCode ^
+      confidence.hashCode ^
+      route.hashCode ^
+      alternatives.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Interpretation &&
+          runtimeType == other.runtimeType &&
+          normalized == other.normalized &&
+          intent == other.intent &&
+          confidence == other.confidence &&
+          route == other.route &&
+          alternatives == other.alternatives;
+}
+
+enum InterpretationRoute {
+  /// A phrase the user taught.
+  taught,
+
+  /// Command or predicate words matched directly.
+  fastPath,
+
+  /// The naive-Bayes posterior settled it.
+  inference,
+
+  /// Nothing was confident enough; see `alternatives`.
+  noMatch,
+}
+
 /// One predicate of a demonstration: its role and the value it took.
 class PredicateDemo {
   final String name;
@@ -404,6 +509,24 @@ class PredicateDemo {
 
 enum Role { context, goal, subgoal, action }
 
+class ScoredIntent {
+  final SpokenIntent intent;
+  final double score;
+
+  const ScoredIntent({required this.intent, required this.score});
+
+  @override
+  int get hashCode => intent.hashCode ^ score.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ScoredIntent &&
+          runtimeType == other.runtimeType &&
+          intent == other.intent &&
+          score == other.score;
+}
+
 class SkillProvenance {
   final String skillName;
   final String authorPubkey;
@@ -427,6 +550,46 @@ class SkillProvenance {
           skillName == other.skillName &&
           authorPubkey == other.authorPubkey &&
           reputation == other.reputation;
+}
+
+/// One reading of an utterance. `predicate` is set for `SetGoal` and `Observe`; `value` is the
+/// observed value (`Observe`) or 1 for good and 0 for bad (`Feedback`).
+class SpokenIntent {
+  final IntentKind kind;
+  final String? predicate;
+  final int value;
+
+  const SpokenIntent({required this.kind, this.predicate, required this.value});
+
+  @override
+  int get hashCode => kind.hashCode ^ predicate.hashCode ^ value.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SpokenIntent &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          predicate == other.predicate &&
+          value == other.value;
+}
+
+class TaughtPhrase {
+  final String phrase;
+  final SpokenIntent intent;
+
+  const TaughtPhrase({required this.phrase, required this.intent});
+
+  @override
+  int get hashCode => phrase.hashCode ^ intent.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TaughtPhrase &&
+          runtimeType == other.runtimeType &&
+          phrase == other.phrase &&
+          intent == other.intent;
 }
 
 class UndoResult {
