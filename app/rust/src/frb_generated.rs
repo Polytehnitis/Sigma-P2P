@@ -783,6 +783,7 @@ impl SseDecode for crate::api::agent::DecisionImpasseKind {
             0 => crate::api::agent::DecisionImpasseKind::NoCandidates,
             1 => crate::api::agent::DecisionImpasseKind::Tie,
             2 => crate::api::agent::DecisionImpasseKind::NoChange,
+            3 => crate::api::agent::DecisionImpasseKind::Conflict,
             _ => unreachable!("Invalid variant for DecisionImpasseKind: {}", inner),
         };
     }
@@ -1323,6 +1324,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::agent::DecisionImpasseKind {
             Self::NoCandidates => 0.into_dart(),
             Self::Tie => 1.into_dart(),
             Self::NoChange => 2.into_dart(),
+            Self::Conflict => 3.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -1649,6 +1651,7 @@ impl SseEncode for crate::api::agent::DecisionImpasseKind {
                 crate::api::agent::DecisionImpasseKind::NoCandidates => 0,
                 crate::api::agent::DecisionImpasseKind::Tie => 1,
                 crate::api::agent::DecisionImpasseKind::NoChange => 2,
+                crate::api::agent::DecisionImpasseKind::Conflict => 3,
                 _ => {
                     unimplemented!("");
                 }

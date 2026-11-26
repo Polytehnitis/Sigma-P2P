@@ -330,7 +330,7 @@ class DecisionImpasse {
   final String goal;
   final List<String> candidates;
 
-  /// Reflective lookahead settled it.
+  /// Reasoning in a substate (or episodic recall) settled it.
   final bool resolved;
   final int cycles;
 
@@ -371,6 +371,9 @@ enum DecisionImpasseKind {
 
   /// The same action again while nothing changed.
   noChange,
+
+  /// The best action is both strongly supported and strongly opposed.
+  conflict,
 }
 
 /// How the agent felt about its last cycle; drives the desktop avatar.

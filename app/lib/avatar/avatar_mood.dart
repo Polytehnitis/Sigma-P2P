@@ -134,6 +134,17 @@ class AvatarMood {
           focus: focus,
           canRate: action != null,
         ),
+        DecisionImpasseKind.conflict => AvatarMood(
+          expression: Expression.thinking,
+          gesture: Gesture.ponder,
+          energy: 0.3,
+          gaze: const Offset(0.6, -0.6),
+          glow: const Color(0xFFB59CFF),
+          bubble: d.candidates.isEmpty
+              ? 'Part of me says yes, part of me says no.'
+              : 'Part of me wants to ${humanize(d.candidates[0])}, part of me says no.',
+          focus: focus,
+        ),
         DecisionImpasseKind.noCandidates => AvatarMood(
           expression: Expression.worried,
           gesture: Gesture.shrug,
