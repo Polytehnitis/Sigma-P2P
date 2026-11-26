@@ -11,6 +11,7 @@
 
 pub mod actions;
 pub mod crypto;
+pub mod language;
 pub mod memory;
 pub mod mind;
 pub mod particles;
@@ -25,6 +26,7 @@ use std::sync::Arc;
 
 pub use actions::{ActionManifest, ActionSpec, ConfirmationGate, PendingAction, Undone};
 pub use crypto::NodeIdentity;
+pub use language::{Intent, Interpretation, PhraseBook, Route};
 pub use memory::{Episode, EpisodicMemory, SemanticMemory, SemanticRecall};
 pub use mind::{Appraisal, Emotion, MindModel, OtherAgent};
 pub use program::{
@@ -1123,6 +1125,8 @@ mod tests;
 mod tests_actions;
 #[cfg(test)]
 mod tests_continuous;
+#[cfg(test)]
+mod tests_language;
 #[cfg(test)]
 mod tests_learning;
 #[cfg(test)]

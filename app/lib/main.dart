@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
@@ -9,6 +10,9 @@ import 'avatar/avatar_view.dart';
 import 'avatar/avatar_window.dart';
 import 'src/rust/api/agent.dart';
 import 'src/rust/frb_generated.dart';
+import 'voice/speech_input.dart';
+import 'voice/speech_model.dart';
+import 'voice/voice_commands.dart';
 
 Future<void> main() async {
   await RustLib.init();
@@ -38,7 +42,7 @@ class AgentPage extends StatefulWidget {
   State<AgentPage> createState() => _AgentPageState();
 }
 
-class _AgentPageState extends State<AgentPage> {
+class _AgentPageState extends State<AgentPage> implements VoiceActions {
   final _swarm = TextEditingController(text: 'sigma-public');
   final _peer = TextEditingController();
   final _trust = TextEditingController();
@@ -60,10 +64,22 @@ class _AgentPageState extends State<AgentPage> {
   String? _note;
   Timer? _noteTimer;
 
+  /// Voice: on-device recognition, then the language layer in Rust.
+  final _utterance = TextEditingController();
+  late final _voice = VoiceCommands(this);
+  SpeechModelStore? _speechModel;
+  SpeechInput? _speech;
+  bool _listening = false;
+  String _heard = '';
+  double? _modelProgress;
+  String? _lastUtterance;
+  List<SpokenIntent> _suggestions = const [];
+
   @override
   void dispose() {
     _heartbeat?.cancel();
     _noteTimer?.cancel();
+    _speech?.dispose();
     super.dispose();
   }
 
@@ -137,6 +153,7 @@ class _AgentPageState extends State<AgentPage> {
     setState(() {
       _info = info;
       _devices = devices;
+      _speechModel = SpeechModelStore(Directory('${dir.path}/sigma/speech'));
     });
     _toast('Agent online, ${info.restoredSkills} skill(s) restored');
   });
@@ -214,29 +231,193 @@ class _AgentPageState extends State<AgentPage> {
           ),
         )
         .toList();
-    final step = await runCognitiveStep(
-      evidence: evidence,
-      activeGoals: [_goal.text],
-    );
-    setState(() {
-      _step = step;
-      _pending = step.awaitingConfirmation;
-      _undoStack = step.undoStack;
-    });
+    await _cycle(evidence, [_goal.text]);
   });
 
   /// One cognitive cycle without new observations or goals (the avatar's own pace).
-  Future<void> _think() => _guard(() async {
-    final step = await runCognitiveStep(
-      evidence: const [],
-      activeGoals: const [],
-    );
+  Future<void> _think() => _guard(() => _cycle(const [], const []));
+
+  Future<void> _cycle(List<Evidence> evidence, List<String> goals) async {
+    final step = await runCognitiveStep(evidence: evidence, activeGoals: goals);
+    if (!mounted) return;
     setState(() {
       _step = step;
       _pending = step.awaitingConfirmation;
       _undoStack = step.undoStack;
     });
+  }
+
+  // ---- Voice ---------------------------------------------------------------
+
+  /// Tap to talk: hears one utterance on this device, then acts on it.
+  Future<void> _listen() async {
+    if (_listening) return _speech?.stop();
+    final model = _speechModel;
+    if (model == null) return;
+    if (!model.installed && !await _installSpeechModel(model)) return;
+    final speech = _speech ??= SherpaSpeechInput(model);
+    setState(() {
+      _listening = true;
+      _heard = '';
+      _suggestions = const [];
+    });
+    try {
+      await for (final h in speech.listen()) {
+        if (!mounted) return;
+        setState(() => _heard = h.text);
+        if (h.isFinal) {
+          setState(() => _listening = false);
+          // The recognizer reports no confidence of its own; speech counts a bit below text.
+          if (h.text.isNotEmpty) await _understand(h.text, 0.9);
+          if (h.text.isEmpty) _toast("I didn't hear anything.");
+        }
+      }
+    } catch (e) {
+      _toast('$e');
+    } finally {
+      if (mounted) setState(() => _listening = false);
+    }
+  }
+
+  Future<bool> _installSpeechModel(SpeechModelStore model) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Talk to Sigma'),
+        content: Text(
+          'Speech is recognized on this device. Sigma needs to download a '
+          'speech model once (about ${model.spec.downloadMegabytes} MB, '
+          'checked against a pinned checksum). Your voice never leaves '
+          'this device.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Download'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return false;
+    setState(() => _modelProgress = 0);
+    try {
+      await model.install(
+        onProgress: (p) {
+          if (mounted) setState(() => _modelProgress = p);
+        },
+      );
+      return true;
+    } catch (e) {
+      _toast('$e');
+      return false;
+    } finally {
+      if (mounted) setState(() => _modelProgress = null);
+    }
+  }
+
+  /// Typed or spoken: the language layer interprets it against Sigma's own predicates.
+  Future<void> _understand(String text, double recognitionConfidence) =>
+      _guard(() async {
+        final i = await interpretUtterance(
+          text: text,
+          recognitionConfidence: recognitionConfidence,
+        );
+        final reply = await _voice.handle(i);
+        setState(() {
+          _lastUtterance = i.normalized;
+          _suggestions = reply.suggestions;
+        });
+        _reply(reply);
+      });
+
+  /// The user picked a "did you mean" reading: remember the phrase, then do it.
+  Future<void> _pickSuggestion(SpokenIntent intent) => _guard(() async {
+    final phrase = _lastUtterance;
+    setState(() => _suggestions = const []);
+    if (phrase != null && phrase.isNotEmpty) {
+      await teachPhrase(phrase: phrase, intent: intent);
+    }
+    _reply(await _voice.run(intent));
   });
+
+  void _reply(VoiceReply reply) {
+    final pending = _pending;
+    final text = pending != null && !reply.text.contains('Confirm')
+        ? '${reply.text} I need your OK to ${humanize(pending.action)}: '
+              'tap Confirm.'
+        : reply.text;
+    _toast(text);
+  }
+
+  @override
+  String? get pendingAction => _pending?.action;
+
+  @override
+  bool get canUndo => _undoStack.isNotEmpty;
+
+  @override
+  Future<void> setGoal(String goal) async {
+    _goal.text = goal;
+    await _cycle(const [], [goal]);
+  }
+
+  @override
+  Future<void> observe(
+    String predicate,
+    int value, {
+    required double confidence,
+  }) async {
+    if (confidence >= hardEvidenceConfidence) {
+      return _cycle([Evidence(predicate: predicate, value: value)], const []);
+    }
+    // Unsure what was said: soft evidence for one cycle, leaning the way it was heard.
+    final lean = 0.5 + 0.5 * confidence.clamp(0, 1);
+    await perceive(
+      predicate: predicate,
+      probability: value == 1 ? lean : 1 - lean,
+    );
+    await _cycle(const [], const []);
+  }
+
+  @override
+  Future<void> think() => _cycle(const [], const []);
+
+  @override
+  Future<void> feedback(double reward) => provideFeedback(reward: reward);
+
+  @override
+  Future<void> undo() async {
+    await undoLastAction();
+    setState(() => _undoStack = _undoStack.sublist(0, _undoStack.length - 1));
+  }
+
+  @override
+  Future<void> cancel() async {
+    await cancelPendingAction();
+    setState(() => _pending = null);
+  }
+
+  @override
+  Future<void> teach() async {
+    // After the current voice step finishes, so the dialog is not under its busy state.
+    Timer.run(() => _avatar ? _teachFromAvatar() : _teach());
+  }
+
+  @override
+  String explain() {
+    final step = _step;
+    if (step == null) return "I haven't thought about anything yet.";
+    final bubble = AvatarMood.of(step, online: _info != null).bubble;
+    final goals = step.goalStack.map(humanize).join(', then ');
+    return [
+      bubble ?? "I'm not doing anything right now.",
+      if (goals.isNotEmpty) 'My goals: $goals.',
+    ].join(' ');
+  }
 
   // The token comes only from this button: engine and skill data never carry it.
   Future<void> _confirm(ConfirmationRequest req) => _guard(() async {
@@ -327,7 +508,13 @@ class _AgentPageState extends State<AgentPage> {
   Widget _buildAvatar() {
     final avatar = SigmaAvatar(
       mood: AvatarMood.of(_step, online: _info != null),
+      listening: _listening,
+      onListen: _info == null ? null : _listen,
       note:
+          (_listening ? (_heard.isEmpty ? 'Listening…' : '“$_heard”') : null) ??
+          (_modelProgress == null
+              ? null
+              : 'Getting my ears… ${(_modelProgress! * 100).round()}%') ??
           _note ??
           (_pending == null
               ? null
@@ -373,6 +560,15 @@ class _AgentPageState extends State<AgentPage> {
       appBar: AppBar(
         title: const Text('Sigma cognitive agent'),
         actions: [
+          if (_info != null)
+            IconButton(
+              key: const Key('voice-listen'),
+              tooltip: _listening ? 'Stop listening' : 'Talk to Sigma',
+              onPressed: _modelProgress != null ? null : _listen,
+              isSelected: _listening,
+              icon: const Icon(Icons.mic_none),
+              selectedIcon: const Icon(Icons.mic),
+            ),
           IconButton(
             tooltip: AvatarWindow.supported
                 ? 'Put Sigma on the desktop'
@@ -469,6 +665,61 @@ class _AgentPageState extends State<AgentPage> {
                   ),
                 ],
               ),
+            ]),
+          if (_info != null)
+            _section('Talk to Sigma', [
+              Row(
+                spacing: 8,
+                children: [
+                  Expanded(
+                    child: TextField(
+                      key: const Key('voice-text'),
+                      controller: _utterance,
+                      decoration: const InputDecoration(
+                        labelText: 'Say or type, e.g. "back up my files"',
+                        border: OutlineInputBorder(),
+                      ),
+                      onSubmitted: (t) {
+                        _utterance.clear();
+                        _understand(t, 1);
+                      },
+                    ),
+                  ),
+                  IconButton.filled(
+                    tooltip: _listening ? 'Stop listening' : 'Speak',
+                    onPressed: _modelProgress != null ? null : _listen,
+                    icon: Icon(_listening ? Icons.stop : Icons.mic),
+                  ),
+                ],
+              ),
+              if (_modelProgress case final p?)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  spacing: 4,
+                  children: [
+                    const Text('Downloading the on-device speech model…'),
+                    LinearProgressIndicator(value: p),
+                  ],
+                ),
+              if (_listening)
+                ListTile(
+                  leading: const Icon(Icons.hearing),
+                  title: Text(_heard.isEmpty ? 'Listening…' : _heard),
+                  subtitle: const Text('Recognized on this device'),
+                ),
+              if (_suggestions.isNotEmpty)
+                Wrap(
+                  spacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    const Text('Did you mean'),
+                    for (final s in _suggestions)
+                      ActionChip(
+                        label: Text(describeIntent(s)),
+                        onPressed: _busy ? null : () => _pickSuggestion(s),
+                      ),
+                  ],
+                ),
             ]),
           if (_info != null)
             _section('Goal', [

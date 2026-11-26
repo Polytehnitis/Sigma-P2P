@@ -35,7 +35,7 @@ A clean-room, decentralized personal cognitive agent inspired by the Sigma cogni
 * **Theory of Mind.** `model_agent(&OtherAgent, depth)` predicts another agent's decision. It runs a decision cycle from that agent's perspective: its goals and observations, plus either its own skills or, by default, ours (simulation theory). Our own state is left untouched. Models nest. The agents a model reasons about are predicted first, and a predicted action `a` of agent `n` becomes evidence `Does(n,a) = 1` in the outer perspective, which allows level-k reasoning.
 
 ```
-crates/sigma-core     engine, crypto, redb storage (+ unit tests a–e)
+crates/sigma-core     engine, crypto, redb storage, language layer (+ unit tests a–e)
 crates/sigma-net      iroh endpoint + gossip, skill-exchange, pairing and device-sync ALPNs (+ 3-node and device-sync tests)
 crates/sigma-daemon   headless CLI for PC / server / NAS
 app/                  Flutter client; app/rust is the flutter_rust_bridge crate
@@ -118,13 +118,25 @@ Tap the face button in the app bar to put Sigma on the desktop. The window turns
 
 Click the character to run a cycle, double-click to return to the full app, and drag to move it. Hover for 👍/👎 on the chosen action. Right-click (long-press on touch) for a menu with **Think now**, rating, **Teach a skill…**, **Think on my own** (a cycle every 10 seconds while the avatar is out, on by default) and **Open Sigma**. On Android and iOS the avatar opens as a full-screen page instead.
 
+### Talk to Sigma (voice and language)
+
+Tap the microphone in the app bar (or the mic under the desktop avatar, or **Listen** in its menu) and say what you want, or type it into **Talk to Sigma**. Everything runs on your device.
+
+* **Speech to text, offline.** Audio from the microphone (16 kHz mono PCM via `record`) streams into a [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) streaming zipformer transducer (English, int8, about 44 MB on disk). The first time, the app asks before it downloads the model once from the sherpa-onnx GitHub release (about 128 MB compressed). It checks the archive and every file it keeps against SHA-256 digests pinned in `app/lib/voice/speech_model.dart`. After that no network is used, and no audio or text ever leaves the device. On Linux, recording uses `parecord` (from `pulseaudio-utils`, or PipeWire's Pulse compatibility).
+* **Language layer (`sigma_core::language`, in Rust).** It interprets the words against the agent's own predicates:
+  * **Fast path.** Phrases you have taught match exactly. Then fixed commands ("undo that", "never mind", "what next?", "good job", "let me teach you", "what are you doing?") and predicate names are matched word by word. A predicate's words come from its name (`SubgoalMountNAS` is "mount nas"), with light stemming, joined words ("back up" = "backup"), a few synonyms ("connect", "server") and an edit-distance tolerance for recognition slips ("nass").
+  * **Requests and reports.** "Back up my files" pushes `GoalBackup`. "The NAS is mounted" and "I mounted the NAS" observe `SubgoalMountNAS = 1`. "The NAS isn't mounted" and "the NAS is unmounted" observe it as 0. A question ("is the NAS mounted?") is never taken for a fact.
+  * **Inference.** When the fast path is unsure, a naive-Bayes classifier (the same model as Sigma's semantic memory) weighs every word against taught phrases, command phrases and predicate names. Its best intent is used only if its posterior is at least 0.55. Otherwise the app asks **Did you mean…?**, and the reading you pick is taught as a phrase. Taught phrases are last-writer-wins registers (`phrase/…`) in the sync state, so they follow you to your paired devices and nowhere else.
+  * **Uncertain speech is soft evidence.** The recognizer's confidence scales the interpretation's. A spoken observation at confidence 0.7 or above becomes evidence. Below that, it is perceived (`perceive`) as a leaning distribution for one cycle only.
+* **Safety.** Language never selects an action and never names one: `Action` predicates are not targets, even for taught phrases. "Yes, do it" is recognized (`ConfirmRequested`) but carries nothing. Sigma answers by pointing at the **Confirm** button, which alone holds the single-use confirmation token. Cancel and undo by voice do only what their buttons do.
+
 Transparency needs a compositing window manager on Linux. Without one the companion keeps a black background.
 
 Tests:
 
 ```sh
-cd app && flutter test                                                # avatar mood, painting and interactions
-xvfb-run -a flutter test integration_test/agent_test.dart -d linux    # FFI smoke test
+cd app && flutter test                                                # avatar mood, painting and interactions, voice commands
+xvfb-run -a flutter test integration_test/agent_test.dart -d linux    # FFI smoke test (language included)
 xvfb-run -a flutter test integration_test/avatar_test.dart -d linux   # window becomes the companion and back
 ```
 

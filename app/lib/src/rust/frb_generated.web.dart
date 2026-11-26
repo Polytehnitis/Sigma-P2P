@@ -51,6 +51,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DecisionImpasse dco_decode_box_autoadd_decision_impasse(dynamic raw);
 
   @protected
+  SpokenIntent dco_decode_box_autoadd_spoken_intent(dynamic raw);
+
+  @protected
   CognitiveStep dco_decode_cognitive_step(dynamic raw);
 
   @protected
@@ -78,6 +81,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int dco_decode_i_32(dynamic raw);
 
   @protected
+  IntentKind dco_decode_intent_kind(dynamic raw);
+
+  @protected
+  Interpretation dco_decode_interpretation(dynamic raw);
+
+  @protected
+  InterpretationRoute dco_decode_interpretation_route(dynamic raw);
+
+  @protected
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
@@ -99,7 +111,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<ScoredIntent> dco_decode_list_scored_intent(dynamic raw);
+
+  @protected
   List<SkillProvenance> dco_decode_list_skill_provenance(dynamic raw);
+
+  @protected
+  List<TaughtPhrase> dco_decode_list_taught_phrase(dynamic raw);
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
@@ -113,13 +131,25 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DecisionImpasse? dco_decode_opt_box_autoadd_decision_impasse(dynamic raw);
 
   @protected
+  SpokenIntent? dco_decode_opt_box_autoadd_spoken_intent(dynamic raw);
+
+  @protected
   PredicateDemo dco_decode_predicate_demo(dynamic raw);
 
   @protected
   Role dco_decode_role(dynamic raw);
 
   @protected
+  ScoredIntent dco_decode_scored_intent(dynamic raw);
+
+  @protected
   SkillProvenance dco_decode_skill_provenance(dynamic raw);
+
+  @protected
+  SpokenIntent dco_decode_spoken_intent(dynamic raw);
+
+  @protected
+  TaughtPhrase dco_decode_taught_phrase(dynamic raw);
 
   @protected
   int dco_decode_u_32(dynamic raw);
@@ -165,6 +195,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SpokenIntent sse_decode_box_autoadd_spoken_intent(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   CognitiveStep sse_decode_cognitive_step(SseDeserializer deserializer);
 
   @protected
@@ -196,6 +231,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
+  IntentKind sse_decode_intent_kind(SseDeserializer deserializer);
+
+  @protected
+  Interpretation sse_decode_interpretation(SseDeserializer deserializer);
+
+  @protected
+  InterpretationRoute sse_decode_interpretation_route(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
@@ -219,7 +265,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<ScoredIntent> sse_decode_list_scored_intent(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<SkillProvenance> sse_decode_list_skill_provenance(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<TaughtPhrase> sse_decode_list_taught_phrase(
     SseDeserializer deserializer,
   );
 
@@ -237,13 +293,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SpokenIntent? sse_decode_opt_box_autoadd_spoken_intent(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   PredicateDemo sse_decode_predicate_demo(SseDeserializer deserializer);
 
   @protected
   Role sse_decode_role(SseDeserializer deserializer);
 
   @protected
+  ScoredIntent sse_decode_scored_intent(SseDeserializer deserializer);
+
+  @protected
   SkillProvenance sse_decode_skill_provenance(SseDeserializer deserializer);
+
+  @protected
+  SpokenIntent sse_decode_spoken_intent(SseDeserializer deserializer);
+
+  @protected
+  TaughtPhrase sse_decode_taught_phrase(SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_32(SseDeserializer deserializer);
@@ -294,6 +364,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_spoken_intent(
+    SpokenIntent self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_cognitive_step(CognitiveStep self, SseSerializer serializer);
 
   @protected
@@ -333,6 +409,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
+  void sse_encode_intent_kind(IntentKind self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_interpretation(Interpretation self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_interpretation_route(
+    InterpretationRoute self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
@@ -366,8 +454,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_scored_intent(
+    List<ScoredIntent> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_skill_provenance(
     List<SkillProvenance> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_taught_phrase(
+    List<TaughtPhrase> self,
     SseSerializer serializer,
   );
 
@@ -387,16 +487,31 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_spoken_intent(
+    SpokenIntent? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_predicate_demo(PredicateDemo self, SseSerializer serializer);
 
   @protected
   void sse_encode_role(Role self, SseSerializer serializer);
 
   @protected
+  void sse_encode_scored_intent(ScoredIntent self, SseSerializer serializer);
+
+  @protected
   void sse_encode_skill_provenance(
     SkillProvenance self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_spoken_intent(SpokenIntent self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_taught_phrase(TaughtPhrase self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_32(int self, SseSerializer serializer);

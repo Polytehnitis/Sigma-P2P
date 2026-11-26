@@ -3,7 +3,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use sigma_core::{
-    crypto, ActionManifest, ActionSpec, ConfirmationGate, Emotion as CoreEmotion, FactorStore, ImpasseKind,
+    crypto, language, ActionManifest, ActionSpec, ConfirmationGate, Emotion as CoreEmotion, FactorStore, ImpasseKind,
     NodeIdentity, PredicateRole, PredicateSchema, SigmaEngine, SkillPackage, QUARANTINE,
 };
 use sigma_net::{EndpointId, SkillMeshNode};
@@ -19,6 +19,8 @@ struct Agent {
     node: Arc<SkillMeshNode>,
     /// Holds the token of the action awaiting the user's confirmation.
     gate: Mutex<ConfirmationGate>,
+    /// Phrases the user taught, this device's and synced ones.
+    phrases: Arc<Mutex<language::PhraseBook>>,
 }
 
 static AGENT: OnceLock<Agent> = OnceLock::new();
@@ -204,9 +206,15 @@ pub fn init_agent(storage_dir: String, swarm_passphrase: String, bootstrap_peers
         }
     });
     // Changes synced from the user's other devices go straight into the live engine.
-    let (e, n, s) = (engine.clone(), node.clone(), store.clone());
+    let phrases = Arc::new(Mutex::new(store.load_phrases().map_err(err)?));
+    let (e, n, s, p) = (engine.clone(), node.clone(), store.clone(), phrases.clone());
     rt.spawn(async move {
         while let Some(report) = synced.recv().await {
+            if report.changed.iter().any(|k| k.starts_with(sigma_core::sync::keys::PHRASE)) {
+                if let Ok(book) = s.load_phrases() {
+                    *p.lock().unwrap() = book;
+                }
+            }
             let compiled = s.refresh_engine(&mut e.lock().unwrap(), &report).unwrap_or_default();
             for skill in compiled {
                 let _ = n.publish_local_skill(skill);
@@ -214,7 +222,7 @@ pub fn init_agent(storage_dir: String, swarm_passphrase: String, bootstrap_peers
         }
     });
     let gate = Mutex::new(ConfirmationGate::new());
-    let agent = AGENT.get_or_init(|| Agent { rt, store, identity, engine, node, gate });
+    let agent = AGENT.get_or_init(|| Agent { rt, store, identity, engine, node, gate, phrases });
     Ok(info(agent, restored.len() as u32))
 }
 
@@ -438,6 +446,168 @@ pub fn paired_devices() -> Result<Vec<String>> {
 pub fn unpair_device(hex_pubkey: String) -> Result<()> {
     let key = crypto::pubkey_from_hex(&hex_pubkey).map_err(err)?;
     agent()?.store.unpair_device(&key).map_err(err)
+}
+
+/// What an utterance asks for. Language never confirms an action: `ConfirmRequested` only
+/// tells the UI to point at its own Confirm button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntentKind {
+    SetGoal,
+    Observe,
+    Think,
+    Feedback,
+    Undo,
+    Cancel,
+    ConfirmRequested,
+    Teach,
+    Explain,
+}
+
+/// One reading of an utterance. `predicate` is set for `SetGoal` and `Observe`; `value` is the
+/// observed value (`Observe`) or 1 for good and 0 for bad (`Feedback`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpokenIntent {
+    pub kind: IntentKind,
+    pub predicate: Option<String>,
+    pub value: u32,
+}
+
+pub enum InterpretationRoute {
+    /// A phrase the user taught.
+    Taught,
+    /// Command or predicate words matched directly.
+    FastPath,
+    /// The naive-Bayes posterior settled it.
+    Inference,
+    /// Nothing was confident enough; see `alternatives`.
+    NoMatch,
+}
+
+pub struct Interpretation {
+    pub normalized: String,
+    pub intent: Option<SpokenIntent>,
+    /// In [0, 1], the recognizer's confidence included.
+    pub confidence: f32,
+    pub route: InterpretationRoute,
+    /// Other likely readings, best first, for "did you mean…?".
+    pub alternatives: Vec<ScoredIntent>,
+}
+
+pub struct ScoredIntent {
+    pub intent: SpokenIntent,
+    pub score: f32,
+}
+
+pub struct TaughtPhrase {
+    pub phrase: String,
+    pub intent: SpokenIntent,
+}
+
+impl From<language::Intent> for SpokenIntent {
+    fn from(i: language::Intent) -> Self {
+        use language::Intent as I;
+        let (kind, predicate, value) = match i {
+            I::SetGoal(g) => (IntentKind::SetGoal, Some(g), 1),
+            I::Observe { predicate, value } => (IntentKind::Observe, Some(predicate), value as u32),
+            I::Think => (IntentKind::Think, None, 0),
+            I::Feedback(good) => (IntentKind::Feedback, None, u32::from(good)),
+            I::Undo => (IntentKind::Undo, None, 0),
+            I::Cancel => (IntentKind::Cancel, None, 0),
+            I::ConfirmRequested => (IntentKind::ConfirmRequested, None, 0),
+            I::Teach => (IntentKind::Teach, None, 0),
+            I::Explain => (IntentKind::Explain, None, 0),
+        };
+        SpokenIntent { kind, predicate, value }
+    }
+}
+
+impl TryFrom<SpokenIntent> for language::Intent {
+    type Error = anyhow::Error;
+
+    fn try_from(i: SpokenIntent) -> Result<Self> {
+        use language::Intent as I;
+        let predicate =
+            || i.predicate.clone().filter(|p| !p.trim().is_empty()).ok_or_else(|| anyhow!("predicate missing"));
+        Ok(match i.kind {
+            IntentKind::SetGoal => I::SetGoal(predicate()?),
+            IntentKind::Observe if i.value < 2 => I::Observe { predicate: predicate()?, value: i.value as usize },
+            IntentKind::Observe => return Err(anyhow!("observed value must be 0 or 1")),
+            IntentKind::Think => I::Think,
+            IntentKind::Feedback => I::Feedback(i.value > 0),
+            IntentKind::Undo => I::Undo,
+            IntentKind::Cancel => I::Cancel,
+            IntentKind::ConfirmRequested => I::ConfirmRequested,
+            IntentKind::Teach => I::Teach,
+            IntentKind::Explain => I::Explain,
+        })
+    }
+}
+
+/// Interprets what the user said (or typed) against the agent's own predicates, on this
+/// device. `recognition_confidence` is the speech recognizer's confidence; 1 for typed text.
+/// Nothing is applied: the app acts on the returned intent.
+pub fn interpret_utterance(text: String, recognition_confidence: f32) -> Result<Interpretation> {
+    let a = agent()?;
+    let predicates: Vec<PredicateSchema> =
+        a.engine.lock().unwrap().variables().iter().map(|v| v.schema.clone()).collect();
+    let i = language::interpret(&text, recognition_confidence, &predicates, &a.phrases.lock().unwrap());
+    Ok(Interpretation {
+        normalized: i.normalized,
+        intent: i.intent.map(Into::into),
+        confidence: i.confidence,
+        route: match i.route {
+            language::Route::Taught => InterpretationRoute::Taught,
+            language::Route::FastPath => InterpretationRoute::FastPath,
+            language::Route::Inference => InterpretationRoute::Inference,
+            language::Route::NoMatch => InterpretationRoute::NoMatch,
+        },
+        alternatives: i
+            .alternatives
+            .into_iter()
+            .map(|(intent, score)| ScoredIntent { intent: intent.into(), score })
+            .collect(),
+    })
+}
+
+/// Teaches a phrase so it means `intent` from now on, on all of the user's paired devices.
+/// Returns the phrase as it will be matched (normalized).
+pub fn teach_phrase(phrase: String, intent: SpokenIntent) -> Result<String> {
+    let a = agent()?;
+    let intent = language::Intent::try_from(intent)?;
+    let key = a.store.save_phrase(&phrase, Some(&intent)).map_err(err)?;
+    a.phrases.lock().unwrap().phrases.insert(key.clone(), intent);
+    Ok(key)
+}
+
+/// Forgets a taught phrase, on all of the user's paired devices.
+pub fn forget_phrase(phrase: String) -> Result<()> {
+    let a = agent()?;
+    a.store.save_phrase(&phrase, None).map_err(err)?;
+    a.phrases.lock().unwrap().forget(&phrase);
+    Ok(())
+}
+
+pub fn taught_phrases() -> Result<Vec<TaughtPhrase>> {
+    let book = agent()?.phrases.lock().unwrap().clone();
+    Ok(book.phrases.into_iter().map(|(phrase, intent)| TaughtPhrase { phrase, intent: intent.into() }).collect())
+}
+
+/// Uncertain evidence for the next cycle only: `predicate` is true with `probability`. Used
+/// for what the user said when recognition was unsure, instead of a hard observation.
+pub fn perceive(predicate: String, probability: f32) -> Result<()> {
+    let a = agent()?;
+    if !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
+        return Err(anyhow!("probability must be in [0, 1]"));
+    }
+    let mut engine = a.engine.lock().unwrap();
+    if engine.variables().iter().any(|v| v.schema.name == predicate && v.schema.role == PredicateRole::Action) {
+        return Err(anyhow!("actions cannot be perceived"));
+    }
+    let p = PredicateSchema::binary(&predicate, PredicateRole::Context);
+    if engine.register_predicate(&p).is_ok() {
+        let _ = a.store.save_predicate(&p);
+    }
+    engine.perceive(&predicate, &[1.0 - probability, probability]).map_err(err)
 }
 
 #[flutter_rust_bridge::frb(init)]

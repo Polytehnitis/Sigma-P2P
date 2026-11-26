@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 340104321;
+  int get rustContentHash => 269936221;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -89,6 +89,8 @@ abstract class RustLibApi extends BaseApi {
 
   Future<String> crateApiAgentCreatePairingCode();
 
+  Future<void> crateApiAgentForgetPhrase({required String phrase});
+
   Future<AgentInfo> crateApiAgentInitAgent({
     required String storageDir,
     required String swarmPassphrase,
@@ -97,9 +99,19 @@ abstract class RustLibApi extends BaseApi {
 
   Future<void> crateApiAgentInitApp();
 
+  Future<Interpretation> crateApiAgentInterpretUtterance({
+    required String text,
+    required double recognitionConfidence,
+  });
+
   Future<String> crateApiAgentPairDevice({required String code});
 
   Future<List<String>> crateApiAgentPairedDevices();
+
+  Future<void> crateApiAgentPerceive({
+    required String predicate,
+    required double probability,
+  });
 
   Future<FeedbackResult> crateApiAgentProvideFeedback({required double reward});
 
@@ -112,9 +124,16 @@ abstract class RustLibApi extends BaseApi {
 
   Future<int> crateApiAgentSyncNow();
 
+  Future<List<TaughtPhrase>> crateApiAgentTaughtPhrases();
+
   Future<String> crateApiAgentTeachAndShareSkill({
     required String skillName,
     required List<PredicateDemo> predicates,
+  });
+
+  Future<String> crateApiAgentTeachPhrase({
+    required String phrase,
+    required SpokenIntent intent,
   });
 
   Future<void> crateApiAgentTrustPeerAuthor({required String hexPubkey});
@@ -242,6 +261,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "create_pairing_code", argNames: []);
 
   @override
+  Future<void> crateApiAgentForgetPhrase({required String phrase}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(phrase, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 5,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiAgentForgetPhraseConstMeta,
+        argValues: [phrase],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentForgetPhraseConstMeta =>
+      const TaskConstMeta(debugName: "forget_phrase", argNames: ["phrase"]);
+
+  @override
   Future<AgentInfo> crateApiAgentInitAgent({
     required String storageDir,
     required String swarmPassphrase,
@@ -257,7 +304,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 6,
             port: port_,
           );
         },
@@ -286,7 +333,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 7,
             port: port_,
           );
         },
@@ -305,6 +352,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "init_app", argNames: []);
 
   @override
+  Future<Interpretation> crateApiAgentInterpretUtterance({
+    required String text,
+    required double recognitionConfidence,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(text, serializer);
+          sse_encode_f_32(recognitionConfidence, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 8,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_interpretation,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiAgentInterpretUtteranceConstMeta,
+        argValues: [text, recognitionConfidence],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentInterpretUtteranceConstMeta =>
+      const TaskConstMeta(
+        debugName: "interpret_utterance",
+        argNames: ["text", "recognitionConfidence"],
+      );
+
+  @override
   Future<String> crateApiAgentPairDevice({required String code}) {
     return handler.executeNormal(
       NormalTask(
@@ -314,7 +396,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 9,
             port: port_,
           );
         },
@@ -341,7 +423,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 10,
             port: port_,
           );
         },
@@ -360,6 +442,40 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "paired_devices", argNames: []);
 
   @override
+  Future<void> crateApiAgentPerceive({
+    required String predicate,
+    required double probability,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(predicate, serializer);
+          sse_encode_f_32(probability, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 11,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiAgentPerceiveConstMeta,
+        argValues: [predicate, probability],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentPerceiveConstMeta => const TaskConstMeta(
+    debugName: "perceive",
+    argNames: ["predicate", "probability"],
+  );
+
+  @override
   Future<FeedbackResult> crateApiAgentProvideFeedback({
     required double reward,
   }) {
@@ -371,7 +487,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 12,
             port: port_,
           );
         },
@@ -403,7 +519,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 13,
             port: port_,
           );
         },
@@ -434,7 +550,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 14,
             port: port_,
           );
         },
@@ -461,7 +577,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 15,
             port: port_,
           );
         },
@@ -480,6 +596,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "sync_now", argNames: []);
 
   @override
+  Future<List<TaughtPhrase>> crateApiAgentTaughtPhrases() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 16,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_taught_phrase,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiAgentTaughtPhrasesConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentTaughtPhrasesConstMeta =>
+      const TaskConstMeta(debugName: "taught_phrases", argNames: []);
+
+  @override
   Future<String> crateApiAgentTeachAndShareSkill({
     required String skillName,
     required List<PredicateDemo> predicates,
@@ -493,7 +636,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 17,
             port: port_,
           );
         },
@@ -515,6 +658,40 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<String> crateApiAgentTeachPhrase({
+    required String phrase,
+    required SpokenIntent intent,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(phrase, serializer);
+          sse_encode_box_autoadd_spoken_intent(intent, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 18,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiAgentTeachPhraseConstMeta,
+        argValues: [phrase, intent],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentTeachPhraseConstMeta => const TaskConstMeta(
+    debugName: "teach_phrase",
+    argNames: ["phrase", "intent"],
+  );
+
+  @override
   Future<void> crateApiAgentTrustPeerAuthor({required String hexPubkey}) {
     return handler.executeNormal(
       NormalTask(
@@ -524,7 +701,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 19,
             port: port_,
           );
         },
@@ -554,7 +731,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 20,
             port: port_,
           );
         },
@@ -582,7 +759,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 21,
             port: port_,
           );
         },
@@ -684,6 +861,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SpokenIntent dco_decode_box_autoadd_spoken_intent(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_spoken_intent(raw);
+  }
+
+  @protected
   CognitiveStep dco_decode_cognitive_step(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -782,6 +965,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  IntentKind dco_decode_intent_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return IntentKind.values[raw as int];
+  }
+
+  @protected
+  Interpretation dco_decode_interpretation(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return Interpretation(
+      normalized: dco_decode_String(arr[0]),
+      intent: dco_decode_opt_box_autoadd_spoken_intent(arr[1]),
+      confidence: dco_decode_f_32(arr[2]),
+      route: dco_decode_interpretation_route(arr[3]),
+      alternatives: dco_decode_list_scored_intent(arr[4]),
+    );
+  }
+
+  @protected
+  InterpretationRoute dco_decode_interpretation_route(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return InterpretationRoute.values[raw as int];
+  }
+
+  @protected
   List<String> dco_decode_list_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_String).toList();
@@ -824,9 +1034,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<ScoredIntent> dco_decode_list_scored_intent(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_scored_intent).toList();
+  }
+
+  @protected
   List<SkillProvenance> dco_decode_list_skill_provenance(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_skill_provenance).toList();
+  }
+
+  @protected
+  List<TaughtPhrase> dco_decode_list_taught_phrase(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_taught_phrase).toList();
   }
 
   @protected
@@ -852,6 +1074,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SpokenIntent? dco_decode_opt_box_autoadd_spoken_intent(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_spoken_intent(raw);
+  }
+
+  @protected
   PredicateDemo dco_decode_predicate_demo(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -871,6 +1099,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ScoredIntent dco_decode_scored_intent(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return ScoredIntent(
+      intent: dco_decode_spoken_intent(arr[0]),
+      score: dco_decode_f_32(arr[1]),
+    );
+  }
+
+  @protected
   SkillProvenance dco_decode_skill_provenance(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -880,6 +1120,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       skillName: dco_decode_String(arr[0]),
       authorPubkey: dco_decode_String(arr[1]),
       reputation: dco_decode_f_32(arr[2]),
+    );
+  }
+
+  @protected
+  SpokenIntent dco_decode_spoken_intent(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return SpokenIntent(
+      kind: dco_decode_intent_kind(arr[0]),
+      predicate: dco_decode_opt_String(arr[1]),
+      value: dco_decode_u_32(arr[2]),
+    );
+  }
+
+  @protected
+  TaughtPhrase dco_decode_taught_phrase(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return TaughtPhrase(
+      phrase: dco_decode_String(arr[0]),
+      intent: dco_decode_spoken_intent(arr[1]),
     );
   }
 
@@ -1001,6 +1266,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SpokenIntent sse_decode_box_autoadd_spoken_intent(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_spoken_intent(deserializer));
+  }
+
+  @protected
   CognitiveStep sse_decode_cognitive_step(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_goalStack = sse_decode_list_String(deserializer);
@@ -1107,6 +1380,39 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  IntentKind sse_decode_intent_kind(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return IntentKind.values[inner];
+  }
+
+  @protected
+  Interpretation sse_decode_interpretation(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_normalized = sse_decode_String(deserializer);
+    var var_intent = sse_decode_opt_box_autoadd_spoken_intent(deserializer);
+    var var_confidence = sse_decode_f_32(deserializer);
+    var var_route = sse_decode_interpretation_route(deserializer);
+    var var_alternatives = sse_decode_list_scored_intent(deserializer);
+    return Interpretation(
+      normalized: var_normalized,
+      intent: var_intent,
+      confidence: var_confidence,
+      route: var_route,
+      alternatives: var_alternatives,
+    );
+  }
+
+  @protected
+  InterpretationRoute sse_decode_interpretation_route(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return InterpretationRoute.values[inner];
+  }
+
+  @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -1183,6 +1489,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<ScoredIntent> sse_decode_list_scored_intent(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <ScoredIntent>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_scored_intent(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<SkillProvenance> sse_decode_list_skill_provenance(
     SseDeserializer deserializer,
   ) {
@@ -1192,6 +1512,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <SkillProvenance>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_skill_provenance(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<TaughtPhrase> sse_decode_list_taught_phrase(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <TaughtPhrase>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_taught_phrase(deserializer));
     }
     return ans_;
   }
@@ -1234,6 +1568,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SpokenIntent? sse_decode_opt_box_autoadd_spoken_intent(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_spoken_intent(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   PredicateDemo sse_decode_predicate_demo(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_name = sse_decode_String(deserializer);
@@ -1250,6 +1597,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ScoredIntent sse_decode_scored_intent(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_intent = sse_decode_spoken_intent(deserializer);
+    var var_score = sse_decode_f_32(deserializer);
+    return ScoredIntent(intent: var_intent, score: var_score);
+  }
+
+  @protected
   SkillProvenance sse_decode_skill_provenance(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_skillName = sse_decode_String(deserializer);
@@ -1260,6 +1615,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       authorPubkey: var_authorPubkey,
       reputation: var_reputation,
     );
+  }
+
+  @protected
+  SpokenIntent sse_decode_spoken_intent(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_kind = sse_decode_intent_kind(deserializer);
+    var var_predicate = sse_decode_opt_String(deserializer);
+    var var_value = sse_decode_u_32(deserializer);
+    return SpokenIntent(
+      kind: var_kind,
+      predicate: var_predicate,
+      value: var_value,
+    );
+  }
+
+  @protected
+  TaughtPhrase sse_decode_taught_phrase(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_phrase = sse_decode_String(deserializer);
+    var var_intent = sse_decode_spoken_intent(deserializer);
+    return TaughtPhrase(phrase: var_phrase, intent: var_intent);
   }
 
   @protected
@@ -1360,6 +1736,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_spoken_intent(
+    SpokenIntent self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_spoken_intent(self, serializer);
+  }
+
+  @protected
   void sse_encode_cognitive_step(CognitiveStep self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_String(self.goalStack, serializer);
@@ -1449,6 +1834,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_intent_kind(IntentKind self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_interpretation(
+    Interpretation self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.normalized, serializer);
+    sse_encode_opt_box_autoadd_spoken_intent(self.intent, serializer);
+    sse_encode_f_32(self.confidence, serializer);
+    sse_encode_interpretation_route(self.route, serializer);
+    sse_encode_list_scored_intent(self.alternatives, serializer);
+  }
+
+  @protected
+  void sse_encode_interpretation_route(
+    InterpretationRoute self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
@@ -1520,6 +1933,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_scored_intent(
+    List<ScoredIntent> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_scored_intent(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_skill_provenance(
     List<SkillProvenance> self,
     SseSerializer serializer,
@@ -1528,6 +1953,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_skill_provenance(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_taught_phrase(
+    List<TaughtPhrase> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_taught_phrase(item, serializer);
     }
   }
 
@@ -1568,6 +2005,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_spoken_intent(
+    SpokenIntent? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_spoken_intent(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_predicate_demo(PredicateDemo self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.name, serializer);
@@ -1582,6 +2032,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_scored_intent(ScoredIntent self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_spoken_intent(self.intent, serializer);
+    sse_encode_f_32(self.score, serializer);
+  }
+
+  @protected
   void sse_encode_skill_provenance(
     SkillProvenance self,
     SseSerializer serializer,
@@ -1590,6 +2047,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.skillName, serializer);
     sse_encode_String(self.authorPubkey, serializer);
     sse_encode_f_32(self.reputation, serializer);
+  }
+
+  @protected
+  void sse_encode_spoken_intent(SpokenIntent self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_intent_kind(self.kind, serializer);
+    sse_encode_opt_String(self.predicate, serializer);
+    sse_encode_u_32(self.value, serializer);
+  }
+
+  @protected
+  void sse_encode_taught_phrase(TaughtPhrase self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.phrase, serializer);
+    sse_encode_spoken_intent(self.intent, serializer);
   }
 
   @protected
