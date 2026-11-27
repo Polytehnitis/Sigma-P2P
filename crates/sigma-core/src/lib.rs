@@ -257,7 +257,7 @@ pub struct CycleOutcome {
     /// The chunk a substate's result was compiled into this cycle (see [`SigmaEngine::chunk`]):
     /// signed and compiled when `chunk_author` is set, else unsigned, for the host to adopt
     /// with [`SigmaEngine::learn_chunk`].
-    pub chunk: Option<SkillPackage>,
+    pub chunk: Option<Skill>,
     /// The operator distribution of this cycle's decision: each candidate action, after
     /// preferences, with its selection probability under the selection policy.
     pub operators: Vec<(String, f32)>,
@@ -349,7 +349,7 @@ pub struct SigmaEngine {
     /// by this identity (see [`SigmaEngine::chunk`]).
     pub chunk_author: Option<NodeIdentity>,
     /// Signed chunks waiting to be compiled at the start of the next cycle.
-    pending_chunks: Vec<SkillPackage>,
+    pending_chunks: Vec<Skill>,
     /// How an operator is selected from the operator distribution.
     pub selection: Selection,
     /// Seed of sampled selections, so a run is reproducible.
@@ -792,7 +792,7 @@ impl SigmaEngine {
             (Some(s), Some(a)) if s.result.is_some() => self.chunk(top, a).map(|mut c| {
                 if let Some(author) = &self.chunk_author {
                     c.version = self.export_skill(&c.skill_name).map_or(1, |s| s.version + 1);
-                    author.sign_skill(&mut c);
+                    author.sign(&mut c);
                     self.pending_chunks.push(c.clone());
                 }
                 c
