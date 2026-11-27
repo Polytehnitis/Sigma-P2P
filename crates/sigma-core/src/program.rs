@@ -238,6 +238,63 @@ pub struct PredicateDef {
     pub value_type: Option<String>,
 }
 
+/// Sigma's predicate options. The defaults are this engine's behaviour without options.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PredicateOptions {
+    /// Closed world: a value working memory does not hold is false, so an unobserved atom
+    /// is assumed to hold its first value (`0`, false for a boolean). Open world (the
+    /// default): unknown, so it is inferred.
+    pub closed_world: bool,
+    /// Persistent (the default): evidence stays in working memory until changed. Otherwise it
+    /// lasts one decision cycle, like a percept.
+    pub persistent: bool,
+    /// Unique (the default): exactly one value holds, and the belief is a distribution.
+    /// Otherwise multi-valued (Sigma's universal): any set of values may hold
+    /// (`set_evidence_values`), message passing maximizes over the predicate instead of
+    /// summing, and the belief is a truth level per value (the largest scaled to 1).
+    pub unique: bool,
+    /// Exponential: the belief is `exp` of the incoming product, as for utilities that a
+    /// Boltzmann choice reads.
+    pub exponential: bool,
+    /// Normalize (the default): the belief sums to 1. Otherwise it is scaled so its largest
+    /// value is 1.
+    pub normalize: bool,
+}
+
+impl Default for PredicateOptions {
+    fn default() -> Self {
+        Self { closed_world: false, persistent: true, unique: true, exponential: false, normalize: true }
+    }
+}
+
+/// Additions to a v2 program, carried by a format-v3 skill.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct Extensions {
+    /// Options of the program's predicates, by predicate name.
+    pub predicate_options: Vec<(String, PredicateOptions)>,
+}
+
+impl Extensions {
+    /// Checks the options against the program they extend: each names one of its predicates
+    /// once, and a continuous predicate keeps the defaults for world and uniqueness.
+    pub fn check(&self, program: &Program) -> Result<(), &'static str> {
+        let mut seen = HashSet::new();
+        for (name, o) in &self.predicate_options {
+            let def = program.predicates.iter().find(|p| &p.name == name).ok_or("options for an unknown predicate")?;
+            if !seen.insert(name) {
+                return Err("duplicate predicate options");
+            }
+            let continuous = def.value_type.as_ref().is_some_and(|t| {
+                program.types.iter().any(|ty| &ty.name == t && matches!(ty.kind, TypeKind::Continuous { .. }))
+            });
+            if continuous && (o.closed_world || !o.unique) {
+                return Err("a continuous predicate is open world and unique");
+            }
+        }
+        Ok(())
+    }
+}
+
 /// How messages flow between a pattern and its conditional (Sigma's three pattern kinds).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PatternKind {
@@ -346,6 +403,8 @@ pub struct Grounding {
     pub ranges: Vec<(String, f32, f32)>,
     pub factors: Vec<GroundFactor>,
     pub weights: Vec<f32>,
+    /// Options of predicates, by predicate name (format v3).
+    pub options: Vec<(String, PredicateOptions)>,
 }
 
 /// The name of a ground atom: `Pred` for 0-ary predicates, else `Pred(a,b)`.
@@ -602,7 +661,7 @@ impl Program {
             offset += function.len();
             weights.extend(function);
         }
-        Ok(Grounding { atoms, ranges, factors, weights })
+        Ok(Grounding { atoms, ranges, factors, weights, options: Vec::new() })
     }
 }
 
@@ -622,6 +681,9 @@ pub enum SkillBody {
     Table { predicates: Vec<PredicateSchema>, factor_shape: Vec<usize>, factor_values: Vec<f32> },
     /// Format v2: typed predicates and conditionals.
     Program(Program),
+    /// Format v3: a v2 program with extensions (predicate options). Older nodes reject it as
+    /// malformed, as they do any unknown format.
+    Extended(Program, Extensions),
 }
 
 impl From<SkillPackage> for Skill {
@@ -658,10 +720,27 @@ impl Skill {
         }
     }
 
+    /// A new, unsigned v3 skill: a program with predicate options.
+    pub fn program_with_options(
+        skill_name: &str,
+        version: u64,
+        program: Program,
+        predicate_options: Vec<(String, PredicateOptions)>,
+    ) -> Self {
+        Skill {
+            skill_name: skill_name.into(),
+            version,
+            author_pubkey: [0; 32],
+            signature: Vec::new(),
+            body: SkillBody::Extended(program, Extensions { predicate_options }),
+        }
+    }
+
     pub fn format_version(&self) -> u8 {
         match self.body {
             SkillBody::Table { .. } => 1,
             SkillBody::Program(_) => 2,
+            SkillBody::Extended(..) => 3,
         }
     }
 
@@ -677,7 +756,7 @@ impl Skill {
                 factor_shape: factor_shape.clone(),
                 factor_values: factor_values.clone(),
             }),
-            SkillBody::Program(_) => None,
+            SkillBody::Program(_) | SkillBody::Extended(..) => None,
         }
     }
 
@@ -689,6 +768,11 @@ impl Skill {
                 p.ground()?;
                 NodeIdentity::verify_any_skill(self)
             }
+            SkillBody::Extended(p, x) => {
+                p.ground()?;
+                x.check(p)?;
+                NodeIdentity::verify_any_skill(self)
+            }
         }
     }
 
@@ -696,6 +780,7 @@ impl Skill {
     pub fn grounding(&self) -> Result<Grounding, &'static str> {
         match &self.body {
             SkillBody::Table { predicates, factor_values, .. } => Ok(Grounding {
+                options: Vec::new(),
                 atoms: predicates.clone(),
                 ranges: Vec::new(),
                 weights: factor_values.clone(),
@@ -711,6 +796,11 @@ impl Skill {
                 }],
             }),
             SkillBody::Program(p) => p.ground(),
+            SkillBody::Extended(p, x) => {
+                let mut g = p.ground()?;
+                g.options = x.predicate_options.clone();
+                Ok(g)
+            }
         }
     }
 
@@ -733,7 +823,9 @@ impl Skill {
         let base = atom.split('(').next().unwrap_or(atom);
         match &self.body {
             SkillBody::Table { predicates, .. } => predicates.iter().any(|p| p.name == atom),
-            SkillBody::Program(p) => p.conditionals.iter().flat_map(|c| &c.patterns).any(|pat| pat.predicate == base),
+            SkillBody::Program(p) | SkillBody::Extended(p, _) => {
+                p.conditionals.iter().flat_map(|c| &c.patterns).any(|pat| pat.predicate == base)
+            }
         }
     }
 }
