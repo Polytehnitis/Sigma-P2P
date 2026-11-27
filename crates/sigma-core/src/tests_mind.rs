@@ -150,6 +150,113 @@ fn recursive_theory_of_mind() {
     assert_eq!(level1.predicted_action, None, "without modelling Carol, Bob is stuck in a tie");
 }
 
+/// Bob follows Carol, built as in `recursive_theory_of_mind`.
+fn bob_and_carol(id: &NodeIdentity) -> (OtherAgent, OtherAgent) {
+    let c = |k: &str| Term::Const(k.into());
+    let pat = |kind, p: &str, args| Pattern { kind, predicate: p.into(), args };
+    let follow = |dir: &str| Conditional {
+        name: format!("follow-{dir}"),
+        patterns: vec![
+            pat(PatternKind::Condition, "Coordinate", vec![]),
+            pat(PatternKind::Condition, "Does", vec![c("carol"), c(dir)]),
+            pat(PatternKind::Action, dir, vec![]),
+        ],
+        function_vars: vec![],
+        function: Function::Table(vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 9.0]),
+        learnable: false,
+        normal: None,
+    };
+    let pred = |name: &str, role, args: &[&str]| PredicateDef {
+        name: name.into(),
+        role,
+        args: args.iter().map(|a| a.to_string()).collect(),
+        value_type: None,
+    };
+    let bob_skill = signed_program(
+        id,
+        "follow-carol",
+        Program {
+            types: vec![TypeDef::symbolic("agent", &["carol"]), TypeDef::symbolic("act", &["GoLeft", "GoRight"])],
+            predicates: vec![
+                pred("Coordinate", Goal, &[]),
+                pred("Does", Context, &["agent", "act"]),
+                pred("GoLeft", Action, &[]),
+                pred("GoRight", Action, &[]),
+            ],
+            conditionals: vec![follow("GoLeft"), follow("GoRight")],
+        },
+    );
+    let habit =
+        signed(id, "carol-habit", vec![bin("Coordinate", Goal), bin("GoRight", Action)], vec![1.0, 1.0, 1.0, 9.0]);
+    let carol = OtherAgent {
+        name: "carol".into(),
+        goals: vec!["Coordinate".into()],
+        skills: Some(vec![habit.into()]),
+        ..OtherAgent::default()
+    };
+    let bob = OtherAgent {
+        name: "bob".into(),
+        goals: vec!["Coordinate".into()],
+        skills: Some(vec![bob_skill]),
+        ..OtherAgent::default()
+    };
+    (bob, carol)
+}
+
+#[test]
+fn several_agents_are_modelled_in_one_graph() {
+    let id = NodeIdentity::generate();
+    let (bob, carol) = bob_and_carol(&id);
+    let me = SigmaEngine::new();
+    let joint = me.model_agents_jointly(&[bob.clone(), carol.clone()], &[], 5).unwrap();
+    // Bob's `Does(carol,GoRight)` is tied to Carol's own action in the same graph (Carol's
+    // skills have no GoLeft to tie to).
+    assert_eq!(joint.links, 1);
+    assert!(joint.converged);
+    let [b, c] = &joint.agents[..] else { panic!("two agents") };
+    assert_eq!((b.agent.as_str(), c.agent.as_str()), ("bob", "carol"));
+    assert_eq!(c.predicted_action.as_deref(), Some("GoRight"));
+    assert_eq!(b.predicted_action.as_deref(), Some("GoRight"), "Bob follows Carol's predicted move");
+    assert!(b.action_beliefs.iter().all(|(a, _)| a == "GoLeft" || a == "GoRight"), "only Bob's own actions");
+    // One round: Carol's move is not yet known when Bob decides, so he is stuck in a tie.
+    let first = me.model_agents_jointly(&[bob.clone(), carol.clone()], &[], 1).unwrap();
+    assert_eq!(first.agents[0].predicted_action, None);
+    assert!(!first.converged);
+    // The per-agent design with nesting agrees.
+    let nested = OtherAgent { models: vec![carol.clone()], ..bob.clone() };
+    assert_eq!(me.model_agent(&nested, 2).unwrap().predicted_action, b.predicted_action);
+    assert!(me.model_agents_jointly(&[bob.clone(), bob], &[], 1).is_err(), "names must differ");
+}
+
+#[test]
+fn agents_in_one_graph_share_the_world() {
+    let id = NodeIdentity::generate();
+    let engine = backup_engine(&id);
+    let goal = vec!["GoalBackup".to_string()];
+    // Alice sees that the NAS is mounted; Bob does not look.
+    let alice = OtherAgent {
+        name: "alice".into(),
+        goals: goal.clone(),
+        evidence: vec![("SubgoalMountNAS".into(), 1)],
+        ..OtherAgent::default()
+    };
+    let bob = OtherAgent { name: "bob".into(), goals: goal, ..OtherAgent::default() };
+    // Separately, each with its own view of the world.
+    let apart = engine.model_agents_jointly(&[alice.clone(), bob.clone()], &[], 3).unwrap();
+    let acts: Vec<_> = apart.agents.iter().map(|m| m.predicted_action.clone()).collect();
+    assert_eq!(acts, [Some("ActionSyncFiles".into()), Some("ActionMountNAS".into())]);
+    // One shared world: what Alice observes holds for Bob too.
+    let shared = engine.model_agents_jointly(&[alice.clone(), bob.clone()], &["SubgoalMountNAS"], 3).unwrap();
+    let acts: Vec<_> = shared.agents.iter().map(|m| m.predicted_action.clone()).collect();
+    assert_eq!(acts, [Some("ActionSyncFiles".into()), Some("ActionSyncFiles".into())]);
+    assert!(shared.variables < apart.variables, "one variable for both");
+    // A single agent in the joint graph predicts what `model_agent` does.
+    for a in [&alice, &bob] {
+        let one = engine.model_agents_jointly(std::slice::from_ref(a), &[], 2).unwrap();
+        assert_eq!(one.agents[0].predicted_action, engine.model_agent(a, 1).unwrap().predicted_action);
+    }
+}
+
 #[test]
 fn appraisals_live_in_the_graph_and_skills_can_use_them() {
     use crate::appraisal::{EMOTION, EMOTIONS, SURPRISED};
