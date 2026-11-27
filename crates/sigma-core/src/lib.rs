@@ -39,6 +39,7 @@ pub mod map;
 pub mod memory;
 pub mod mind;
 pub mod neural;
+pub mod opencyc;
 pub mod parametric;
 pub mod parse;
 pub mod particles;
@@ -1361,7 +1362,7 @@ impl SigmaEngine {
             return beliefs;
         }
         let (prior, msgs) = self.propagate(clamp);
-        (0..self.vars.len()).map(|v| self.belief(v, &prior, &msgs, None)).collect()
+        self.beliefs(&prior, &msgs)
     }
 
     /// A predicate's options applied to its belief (a distribution): exponential, then
@@ -1442,7 +1443,8 @@ impl SigmaEngine {
         mut trace: Option<&mut inspect::Recorder>,
     ) -> Vec<Vec<Vec<f32>>> {
         let fixed = prior;
-        let uniform = |v: usize| normalize(vec![1.0; prior[v].len()]);
+        let uniforms: Vec<Vec<f32>> = prior.iter().map(|p| normalize(vec![1.0; p.len()])).collect();
+        let uniform = |v: usize| uniforms[v].clone();
         let mut msgs: Vec<Vec<Vec<f32>>> =
             self.factors.iter().map(|f| f.vars.iter().map(|&v| uniform(v)).collect()).collect();
         // Slots over multi-valued predicates, which are maximized over (Sigma's universal).
@@ -1451,9 +1453,14 @@ impl SigmaEngine {
         let maximize = self.inference == Inference::MaxProduct;
         let variational = self.inference == Inference::VariationalMessagePassing;
         let ep = self.inference == Inference::ExpectationPropagation;
-        let work: usize = tables.iter().zip(&self.factors).map(|(t, f)| t.len() * f.vars.len()).sum();
-        let threads = self.worker_threads(work);
         let masked = |fi: usize| self.masked(fi);
+        // Factors that sit out keep their uniform messages and cost nothing.
+        let work: usize = (0..self.factors.len())
+            .filter(|&fi| !masked(fi))
+            .map(|fi| tables[fi].len() * self.factors[fi].vars.len())
+            .sum();
+        let threads = self.worker_threads(work);
+        let slots = self.slots_by_var();
         let inbound_of = |fi: usize, msgs: &[Vec<Vec<f32>>]| -> Vec<Vec<f32>> {
             let f = &self.factors[fi];
             f.vars
@@ -1462,8 +1469,8 @@ impl SigmaEngine {
                 .map(|(s, &v)| match f.kinds[s] {
                     PatternKind::Action => uniform(v),
                     // Mean field: the other variables' whole beliefs, not cavities.
-                    _ if variational => self.belief(v, fixed, msgs, None),
-                    _ => self.belief(v, fixed, msgs, Some((fi, s))),
+                    _ if variational => self.belief_over(v, fixed, msgs, None, &slots[v]),
+                    _ => self.belief_over(v, fixed, msgs, Some((fi, s)), &slots[v]),
                 })
                 .collect()
         };
@@ -1504,90 +1511,103 @@ impl SigmaEngine {
             #[cfg(not(feature = "gpu"))]
             let on_gpu: Option<Vec<Vec<Vec<f32>>>> = None;
             #[cfg_attr(not(feature = "gpu"), allow(clippy::unnecessary_literal_unwrap))]
-            let next: Vec<Vec<Vec<f32>>> = on_gpu.unwrap_or_else(|| {
-                par_map(self.factors.len(), threads, |fi| {
-                    let f = &self.factors[fi];
-                    if masked(fi) {
-                        return f.vars.iter().map(|&v| uniform(v)).collect();
-                    }
-                    let inbound = inbound_of(fi, &msgs);
-                    (0..f.vars.len())
-                        .map(|s| {
-                            if f.kinds[s] == PatternKind::Condition {
-                                return uniform(f.vars[s]);
-                            }
-                            if variational {
-                                // exp(E_q[log f]) over the other slots.
-                                let mut out = vec![0.0f32; inbound[s].len()];
-                                for (idx, &w) in tables[fi].indexed_iter() {
-                                    let q = (0..inbound.len())
-                                        .filter(|&j| j != s)
-                                        .fold(1.0, |acc, j| acc * inbound[j][idx[j]]);
-                                    out[idx[s]] += q * w.max(1e-30).ln();
-                                }
-                                let top = out.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                                return normalize(out.into_iter().map(|l| (l - top).exp()).collect());
-                            }
-                            if ep && self.vars[f.vars[s]].range.is_some() {
-                                let mut out = vec![0.0; inbound[s].len()];
-                                for (idx, &w) in tables[fi].indexed_iter() {
-                                    out[idx[s]] += (0..inbound.len())
-                                        .filter(|&j| j != s)
-                                        .fold(w, |acc, j| acc * inbound[j][idx[j]]);
-                                }
-                                return self.ep_project(f.vars[s], &inbound[s], normalize(out));
-                            }
-                            if maximize {
-                                // Max-product: every other slot is maximized over.
-                                let mut out = vec![0.0f32; inbound[s].len()];
-                                for (idx, &w) in tables[fi].indexed_iter() {
-                                    let p = (0..inbound.len())
-                                        .filter(|&j| j != s)
-                                        .fold(w, |acc, j| acc * inbound[j][idx[j]]);
-                                    out[idx[s]] = out[idx[s]].max(p);
-                                }
-                                return normalize(out);
-                            }
-                            if !universal[fi].iter().enumerate().any(|(j, &u)| u && j != s) {
-                                let mut out = vec![0.0; inbound[s].len()];
-                                for (idx, &w) in tables[fi].indexed_iter() {
-                                    out[idx[s]] += (0..inbound.len())
-                                        .filter(|&j| j != s)
-                                        .fold(w, |acc, j| acc * inbound[j][idx[j]]);
-                                }
-                                return normalize(out);
-                            }
-                            // Multi-valued slots are maximized over, the others summed (within
-                            // each assignment of the multi-valued ones).
-                            let mut groups: HashMap<(usize, Vec<usize>), f32> = HashMap::new();
-                            for (idx, &w) in tables[fi].indexed_iter() {
-                                let key: Vec<usize> = (0..inbound.len())
-                                    .filter(|&j| j != s && universal[fi][j])
-                                    .map(|j| idx[j])
-                                    .collect();
-                                let p =
-                                    (0..inbound.len()).filter(|&j| j != s).fold(w, |acc, j| acc * inbound[j][idx[j]]);
-                                *groups.entry((idx[s], key)).or_default() += p;
-                            }
-                            let mut out = vec![0.0f32; inbound[s].len()];
-                            for ((x, _), p) in groups {
-                                out[x] = out[x].max(p);
-                            }
-                            normalize(out)
-                        })
-                        .collect()
-                })
-            });
+            // `None` for a factor that sits out: its messages stay as they are (uniform).
+            let next: Vec<Option<Vec<Vec<f32>>>> = on_gpu.map_or_else(
+                || {
+                    par_map(self.factors.len(), threads, |fi| {
+                        let f = &self.factors[fi];
+                        if masked(fi) {
+                            return None;
+                        }
+                        let inbound = inbound_of(fi, &msgs);
+                        Some(
+                            (0..f.vars.len())
+                                .map(|s| {
+                                    if f.kinds[s] == PatternKind::Condition {
+                                        return uniform(f.vars[s]);
+                                    }
+                                    if variational {
+                                        // exp(E_q[log f]) over the other slots.
+                                        let mut out = vec![0.0f32; inbound[s].len()];
+                                        for (idx, &w) in tables[fi].indexed_iter() {
+                                            let q = (0..inbound.len())
+                                                .filter(|&j| j != s)
+                                                .fold(1.0, |acc, j| acc * inbound[j][idx[j]]);
+                                            out[idx[s]] += q * w.max(1e-30).ln();
+                                        }
+                                        let top = out.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                                        return normalize(out.into_iter().map(|l| (l - top).exp()).collect());
+                                    }
+                                    if ep && self.vars[f.vars[s]].range.is_some() {
+                                        let mut out = vec![0.0; inbound[s].len()];
+                                        for (idx, &w) in tables[fi].indexed_iter() {
+                                            out[idx[s]] += (0..inbound.len())
+                                                .filter(|&j| j != s)
+                                                .fold(w, |acc, j| acc * inbound[j][idx[j]]);
+                                        }
+                                        return self.ep_project(f.vars[s], &inbound[s], normalize(out));
+                                    }
+                                    if maximize {
+                                        // Max-product: every other slot is maximized over.
+                                        let mut out = vec![0.0f32; inbound[s].len()];
+                                        for (idx, &w) in tables[fi].indexed_iter() {
+                                            let p = (0..inbound.len())
+                                                .filter(|&j| j != s)
+                                                .fold(w, |acc, j| acc * inbound[j][idx[j]]);
+                                            out[idx[s]] = out[idx[s]].max(p);
+                                        }
+                                        return normalize(out);
+                                    }
+                                    if !universal[fi].iter().enumerate().any(|(j, &u)| u && j != s) {
+                                        let mut out = vec![0.0; inbound[s].len()];
+                                        for (idx, &w) in tables[fi].indexed_iter() {
+                                            out[idx[s]] += (0..inbound.len())
+                                                .filter(|&j| j != s)
+                                                .fold(w, |acc, j| acc * inbound[j][idx[j]]);
+                                        }
+                                        return normalize(out);
+                                    }
+                                    // Multi-valued slots are maximized over, the others summed (within
+                                    // each assignment of the multi-valued ones).
+                                    let mut groups: HashMap<(usize, Vec<usize>), f32> = HashMap::new();
+                                    for (idx, &w) in tables[fi].indexed_iter() {
+                                        let key: Vec<usize> = (0..inbound.len())
+                                            .filter(|&j| j != s && universal[fi][j])
+                                            .map(|j| idx[j])
+                                            .collect();
+                                        let p = (0..inbound.len())
+                                            .filter(|&j| j != s)
+                                            .fold(w, |acc, j| acc * inbound[j][idx[j]]);
+                                        *groups.entry((idx[s], key)).or_default() += p;
+                                    }
+                                    let mut out = vec![0.0f32; inbound[s].len()];
+                                    for ((x, _), p) in groups {
+                                        out[x] = out[x].max(p);
+                                    }
+                                    normalize(out)
+                                })
+                                .collect(),
+                        )
+                    })
+                },
+                |all| all.into_iter().map(Some).collect(),
+            );
             let delta = next
                 .iter()
-                .flatten()
-                .flatten()
-                .zip(msgs.iter().flatten().flatten())
+                .zip(&msgs)
+                .filter_map(|(n, m)| n.as_ref().map(|n| (n, m)))
+                .flat_map(|(n, m)| n.iter().flatten().zip(m.iter().flatten()))
                 .fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
             if let Some(t) = trace.as_deref_mut() {
-                t.record(&msgs, &next, delta);
+                let full: Vec<Vec<Vec<f32>>> =
+                    next.iter().zip(&msgs).map(|(n, m)| n.clone().unwrap_or_else(|| m.clone())).collect();
+                t.record(&msgs, &full, delta);
             }
-            msgs = next;
+            for (m, n) in msgs.iter_mut().zip(next) {
+                if let Some(n) = n {
+                    *m = n;
+                }
+            }
             if delta < BP_TOLERANCE {
                 break;
             }
@@ -1620,16 +1640,50 @@ impl SigmaEngine {
     }
 
     fn belief(&self, v: usize, prior: &[Vec<f32>], msgs: &[Vec<Vec<f32>>], skip: Option<(usize, usize)>) -> Vec<f32> {
-        let mut b = prior[v].clone();
+        let slots: Vec<(usize, usize)> = self
+            .factors
+            .iter()
+            .enumerate()
+            .flat_map(|(fi, f)| f.vars.iter().enumerate().filter(|&(_, &u)| u == v).map(move |(s, _)| (fi, s)))
+            .collect();
+        self.belief_over(v, prior, msgs, skip, &slots)
+    }
+
+    /// Every `(factor, slot)` over each variable, in factor order: what [`Self::belief`] would
+    /// find by scanning all factors, computed once for a whole propagation.
+    pub(crate) fn slots_by_var(&self) -> Vec<Vec<(usize, usize)>> {
+        let mut out = vec![Vec::new(); self.vars.len()];
         for (fi, f) in self.factors.iter().enumerate() {
-            for (s, _) in f.vars.iter().enumerate().filter(|&(s, &u)| u == v && skip != Some((fi, s))) {
-                b.iter_mut().zip(&msgs[fi][s]).for_each(|(x, m)| *x *= m);
-                // Many normalized messages over a wide domain multiply down towards zero:
-                // rescale before the product underflows f32.
-                let top = b.iter().copied().fold(0.0f32, f32::max);
-                if top > 0.0 && top < 1e-12 {
-                    b.iter_mut().for_each(|x| *x /= top);
-                }
+            for (s, &v) in f.vars.iter().enumerate() {
+                out[v].push((fi, s));
+            }
+        }
+        out
+    }
+
+    /// The beliefs of every variable, from one propagation's messages.
+    pub(crate) fn beliefs(&self, prior: &[Vec<f32>], msgs: &[Vec<Vec<f32>>]) -> Vec<Vec<f32>> {
+        let slots = self.slots_by_var();
+        (0..self.vars.len()).map(|v| self.belief_over(v, prior, msgs, None, &slots[v])).collect()
+    }
+
+    /// [`Self::belief`] over the given `(factor, slot)`s of `v` (see [`Self::slots_by_var`]).
+    fn belief_over(
+        &self,
+        v: usize,
+        prior: &[Vec<f32>],
+        msgs: &[Vec<Vec<f32>>],
+        skip: Option<(usize, usize)>,
+        slots: &[(usize, usize)],
+    ) -> Vec<f32> {
+        let mut b = prior[v].clone();
+        for &(fi, s) in slots.iter().filter(|&&fs| skip != Some(fs)) {
+            b.iter_mut().zip(&msgs[fi][s]).for_each(|(x, m)| *x *= m);
+            // Many normalized messages over a wide domain multiply down towards zero:
+            // rescale before the product underflows f32.
+            let top = b.iter().copied().fold(0.0f32, f32::max);
+            if top > 0.0 && top < 1e-12 {
+                b.iter_mut().for_each(|x| *x /= top);
             }
         }
         normalize(b)
@@ -1778,6 +1832,8 @@ mod tests_mind;
 mod tests_models;
 #[cfg(test)]
 mod tests_neural;
+#[cfg(test)]
+mod tests_opencyc;
 #[cfg(test)]
 mod tests_options;
 #[cfg(test)]

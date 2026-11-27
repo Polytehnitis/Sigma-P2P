@@ -588,7 +588,8 @@ pub const COUNTING: &str = "counting";
 /// * the arithmetic facts of Soar-Lean-Agents' arithmetic-smem agent (single-digit sums with
 ///   carry, differences up to 19 − 10, increments and plus-ten), one base per kind of fact;
 /// * the successor facts of its count-add-smem agent (0 → 1 … 9 → 0);
-/// * Rosie's category ontology and property words (see [`crate::rosie`]).
+/// * Rosie's category ontology and property words (see [`crate::rosie`]);
+/// * a curated taxonomy of everyday concepts from OpenCyc 4.0 (see [`crate::opencyc`]).
 pub fn starting_knowledge() -> Vec<KnowledgeBase> {
     let bundled = "bundled knowledge is valid";
     let mut out = vec![KnowledgeBase::from_smem(SOAR_QA_NAME, SOAR_QA_PREFIX, SOAR_QA_SOURCE).expect(bundled)];
@@ -597,6 +598,7 @@ pub fn starting_knowledge() -> Vec<KnowledgeBase> {
     // Digit tables are for the procedures, not for questions about single facts.
     out.iter_mut().skip(1).for_each(|kb| kb.english = false);
     out.extend(crate::rosie::rosie_knowledge());
+    out.push(crate::opencyc::opencyc_knowledge());
     out
 }
 
@@ -830,6 +832,8 @@ impl SigmaEngine {
         }
         // Questions that name something specific (a person in the faculty directory) come
         // before Rosie's general categories, so "where is Brenna Argall's office?" is about her.
+        // OpenCyc's concepts come next, except where Rosie knows every thing a question names
+        // (its categories have affordances); they are asked again if Rosie has no answer.
         self.knowledge
             .iter()
             .filter(|kb| kb.english)
@@ -838,6 +842,8 @@ impl SigmaEngine {
                 let a = self.answer(&kb.name, &q)?;
                 Some(kb.say(&q, &a))
             })
+            .or_else(|| self.answer_opencyc(text, true))
             .or_else(|| self.answer_rosie(text))
+            .or_else(|| self.answer_opencyc(text, false))
     }
 }

@@ -170,7 +170,7 @@ impl SigmaEngine {
                 t.round = round;
             }
             let msgs = self.message_passing_traced(&prior, &tables, trace.as_deref_mut());
-            beliefs = (0..self.vars.len()).map(|v| self.belief(v, &prior, &msgs, None)).collect();
+            beliefs = self.beliefs(&prior, &msgs);
             if round + 1 < ROUNDS {
                 for (&v, d) in doms.iter_mut().filter(|(_, d)| !d.delta) {
                     let kde = Kde::new(&d.points, &beliefs[v], self.vars[v].range.expect("continuous"));

@@ -1,0 +1,245 @@
+# Everyday concepts kept from OpenCyc 4.0: word|OpenCyc constant[,fallback]
+thing|Thing
+individual|Individual
+spatial thing|SpatialThing
+tangible thing|PartiallyTangible
+living thing|BiologicalLivingObject,Organism-Whole
+animal|Animal
+vertebrate|Vertebrate
+mammal|Mammal
+bird|Bird
+fish|Fish
+reptile|Reptile
+amphibian|Amphibian
+insect|Insect
+plant|Plant
+person|Person,HomoSapiens
+artifact|Artifact
+device|PhysicalDevice
+tool|Tool
+container|Container
+furniture|FurniturePiece,Furniture
+vehicle|TransportationDevice-Vehicle,TransportationDevice
+road vehicle|RoadVehicle
+aircraft|AirTransportationVehicle,Aircraft-Generic
+watercraft|Watercraft
+clothing|ClothingItem,SomethingToWear
+building|Building
+room|RoomInAConstruction
+food|Food,FoodOrDrink
+drink|Drink
+fruit|EdibleFruit,Fruit
+vegetable|Vegetable-Food
+dairy product|DairyProduct
+meat|Meat
+body part|AnimalBodyPart
+organ|Organ
+place|Place
+geographical region|GeographicalRegion
+body of water|BodyOfWater
+event|Event
+action|Action,PurposefulAction
+liquid|LiquidTangibleThing
+metal|Metal
+electrical device|ElectricalDevice
+computer|Computer
+musical instrument|MusicalInstrument
+weapon|Weapon
+toy|Toy
+cooking utensil|CookingUtensil
+eating utensil|FoodUtensil
+person with an occupation|PersonWithOccupation
+# animals
+dog|Dog
+cat|Cat,HouseCat
+horse|Horse
+cow|Cow,Cattle
+pig|Pig,DomesticPig
+sheep|Sheep,DomesticSheep
+chicken|Chicken
+duck|Duck
+mouse|Mouse,HouseMouse
+rat|Rat
+lion|Lion
+tiger|Tiger
+bear|Bear-Animal
+wolf|Wolf,GrayWolf
+fox|Fox
+rabbit|Rabbit
+deer|Deer
+elephant|Elephant
+monkey|Monkey
+whale|Whale
+dolphin|Dolphin
+bat|Bat-Mammal
+snake|Snake
+lizard|Lizard
+turtle|Turtle
+frog|Frog
+shark|Shark
+salmon|Salmon
+eagle|Eagle
+owl|Owl
+penguin|Penguin
+bee|Bee,HoneyBee
+ant|Ant
+butterfly|Butterfly
+spider|Spider
+# plants
+tree|Tree-ThePlant
+flower|Flower-BotanicalPart,FloweringPlant
+grass|Grass-Plant
+# foods
+apple|(FruitFn AppleTree)
+banana|(FruitFn BananaTree)
+orange|(FruitFn OrangeTree)
+grape|(FruitFn GrapeVine)
+strawberry|(FruitFn StrawberryPlant)
+lemon|(FruitFn LemonTree)
+carrot|Carrot-Foodstuff
+potato|(RootFn PotatoPlant)
+tomato|(FruitFn TomatoPlant)
+onion|Onion-Foodstuff
+lettuce|Lettuce-Foodstuff
+bread|Bread
+cheese|Cheese
+butter|Butter
+milk|Milk
+yogurt|Yogurt
+egg|ChickenEgg,Egg-Food,Egg
+rice|Rice-Foodstuff
+pasta|Pasta
+soup|Soup
+cake|Cake
+cookie|Cookie
+chocolate|Chocolate
+beef|Beef
+pork|Pork
+chicken meat|Chicken-Meat
+sandwich|Sandwich
+pizza|Pizza
+water|Water
+coffee|Coffee-Beverage,Coffee
+tea|Tea-Beverage,Tea
+juice|Juice,FruitJuice
+beer|Beer
+wine|Wine
+# furniture and household
+table|Table-PieceOfFurniture,Table
+chair|Chair-PieceOfFurniture
+bed|Bed-PieceOfFurniture
+sofa|Sofa-PieceOfFurniture
+desk|Desk-PieceOfFurniture
+shelf|Shelf
+lamp|Lamp,LightingDevice
+cup|Cup
+mug|DrinkingMug
+glass|DrinkingGlass
+plate|Plate,DinnerPlate
+bowl|Bowl-Eating,Bowl-Generic
+fork|Fork-SilverwarePiece
+knife|Knife
+spoon|Spoon
+pot|StoveTopCookingPot
+frying pan|FryingPan-Generic,Skillet
+bottle|Bottle
+box|Box-Container,Box
+bag|Bag
+refrigerator|Refrigerator
+oven|Oven
+stove|StoveTop
+microwave oven|MicrowaveOven
+dishwasher|Dishwasher
+washing machine|ClothesWasher,WashingMachine-Clothes
+# office and electronics
+book|BookCopy
+pen|WritingPen,BallpointPen
+pencil|Pencil
+paper|SheetOfPaper,Paper
+scissors|Scissors
+stapler|Stapler
+telephone|Telephone
+cell phone|CellularTelephone,CellPhone
+television|TelevisionSet
+radio|RadioReceiver
+camera|Camera
+keyboard|ComputerKeyboard
+clock|Clock
+watch|Watch
+# tools and weapons
+hammer|Hammer
+screwdriver|Screwdriver
+saw|Saw
+wrench|Wrench
+shovel|Shovel
+ladder|Ladder
+gun|Gun,Firearm
+sword|Sword
+# vehicles
+car|Automobile
+truck|Truck
+bus|Bus-RoadVehicle
+bicycle|Bicycle
+motorcycle|Motorcycle
+train|Train-TransportationDevice
+airplane|Airplane
+helicopter|Helicopter
+boat|Boat
+ship|Ship
+# clothing
+shirt|Shirt
+trousers|Pants,Trousers
+dress|Dress
+skirt|Skirt
+coat|Coat
+jacket|Jacket
+shoe|Shoe
+sock|Sock
+hat|Hat
+glove|Glove
+# buildings and rooms
+house|House-Modern
+apartment|ApartmentUnit
+school|SchoolBuilding,School-Building
+hospital|HospitalBuilding,Hospital
+church|ChurchBuilding,Church-Building
+kitchen|Kitchen
+bedroom|Bedroom
+bathroom|Bathroom
+office|OfficeRoom,Office-Room
+door|DoorInABuilding
+window|WindowPortal
+# places
+city|City
+country|Country
+mountain|Mountain
+river|River
+lake|Lake
+ocean|Ocean
+sea|Sea
+island|Island
+forest|Forest
+desert|Desert
+# people
+child|HumanChild,Child
+adult|HumanAdult
+man|AdultMalePerson,MaleHuman
+woman|AdultFemalePerson,FemaleHuman
+doctor|Doctor-Medical
+nurse|Nurse
+teacher|Teacher
+student|Student
+police officer|PoliceOfficer-Municipal
+farmer|Farmer
+# body parts
+head|Head-AnimalBodyPart
+hand|Hand
+foot|Foot-AnimalBodyPart,Foot
+arm|Arm
+leg|Leg
+eye|Eye
+ear|Ear
+nose|Nose
+mouth|Mouth
+heart|Heart
+brain|Brain

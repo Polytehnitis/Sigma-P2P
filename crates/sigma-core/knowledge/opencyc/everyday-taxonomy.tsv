@@ -1,0 +1,233 @@
+# word	OpenCyc constant	OpenCyc id	parents
+thing	Thing	Mx4rvViA9JwpEbGdrcN5Y29ycA	
+individual	Individual	Mx4rvVjaApwpEbGdrcN5Y29ycA	thing
+spatial thing	SpatialThing	Mx4rvVjpUZwpEbGdrcN5Y29ycA	individual
+tangible thing	PartiallyTangible	Mx4rvVj27ZwpEbGdrcN5Y29ycA	spatial thing
+living thing	BiologicalLivingObject	Mx4rvVim7ZwpEbGdrcN5Y29ycA	tangible thing
+animal	Animal	Mx4rvViwMZwpEbGdrcN5Y29ycA	living thing
+vertebrate	Vertebrate	Mx4rvVil5pwpEbGdrcN5Y29ycA	animal
+mammal	Mammal	Mx4rvVimKJwpEbGdrcN5Y29ycA	vertebrate
+bird	Bird	Mx4rvVi8SJwpEbGdrcN5Y29ycA	vertebrate
+fish	Fish	Mx4rvVjfU5wpEbGdrcN5Y29ycA	vertebrate
+reptile	Reptile	Mx4rvVjyMJwpEbGdrcN5Y29ycA	vertebrate
+amphibian	Amphibian	Mx4rvVjgJJwpEbGdrcN5Y29ycA	vertebrate
+insect	Insect	Mx4rvVi495wpEbGdrcN5Y29ycA	animal
+plant	Plant	Mx4rvVjG4ZwpEbGdrcN5Y29ycA	living thing
+person	Person	Mx4rvViAkpwpEbGdrcN5Y29ycA	mammal
+artifact	Artifact	Mx4rvVkH_ZwpEbGdrcN5Y29ycA	tangible thing
+device	PhysicalDevice	Mx4rvVjHL5wpEbGdrcN5Y29ycA	artifact
+tool	Tool	Mx4rwPznZJwpEbGdrcN5Y29ycA	device
+container	Container	Mx4rvVjOGJwpEbGdrcN5Y29ycA	tangible thing
+furniture	FurniturePiece	Mx4rvVjQHZwpEbGdrcN5Y29ycA	artifact
+vehicle	TransportationDevice-Vehicle	Mx4rwLzhaZwpEbGdrcN5Y29ycA	device
+road vehicle	RoadVehicle	Mx4rvVjT95wpEbGdrcN5Y29ycA	container, vehicle
+aircraft	AirTransportationVehicle	Mx4rz9o1UoVbQdeGXJ2yLxG0_A	vehicle
+watercraft	Watercraft	Mx4rvVi-55wpEbGdrcN5Y29ycA	container, device
+clothing	ClothingItem	Mx4rvVkD1ZwpEbGdrcN5Y29ycA	device
+building	Building	Mx4rvVj7KJwpEbGdrcN5Y29ycA	container, device, place
+room	RoomInAConstruction	Mx4rvVifspwpEbGdrcN5Y29ycA	container, device, place
+food	Food	Mx4rvVi9i5wpEbGdrcN5Y29ycA	tangible thing
+drink	Drink	Mx4rvVj0CJwpEbGdrcN5Y29ycA	liquid
+fruit	EdibleFruit	Mx4rvVjllZwpEbGdrcN5Y29ycA	food, living thing
+vegetable	Vegetable-Food	Mx4rvVjqzZwpEbGdrcN5Y29ycA	food
+dairy product	DairyProduct	Mx4rvVjM3ZwpEbGdrcN5Y29ycA	artifact
+meat	Meat	Mx4rvVi9RpwpEbGdrcN5Y29ycA	food
+body part	AnimalBodyPart	Mx4rvViAHJwpEbGdrcN5Y29ycA	living thing
+organ	Organ	Mx4rwP3iWpwpEbGdrcN5Y29ycA	body part
+place	Place	Mx4rvVjTtJwpEbGdrcN5Y29ycA	spatial thing
+geographical region	GeographicalRegion	Mx4rvViACZwpEbGdrcN5Y29ycA	place, tangible thing
+body of water	BodyOfWater	Mx4rvViE_JwpEbGdrcN5Y29ycA	geographical region
+event	Event	Mx4rvViADZwpEbGdrcN5Y29ycA	individual
+action	Action	Mx4rvVioQZwpEbGdrcN5Y29ycA	event
+liquid	LiquidTangibleThing	Mx4rvVjSoJwpEbGdrcN5Y29ycA	tangible thing
+metal	Metal	Mx4rvVisOZwpEbGdrcN5Y29ycA	tangible thing
+electrical device	ElectricalDevice	Mx4rvVjUUZwpEbGdrcN5Y29ycA	device
+computer	Computer	Mx4rvVjXzZwpEbGdrcN5Y29ycA	electrical device
+musical instrument	MusicalInstrument	Mx4rvVjI6JwpEbGdrcN5Y29ycA	device
+weapon	Weapon	Mx4rvVj8V5wpEbGdrcN5Y29ycA	artifact
+toy	Toy	Mx4rvViE25wpEbGdrcN5Y29ycA	device
+cooking utensil	CookingUtensil	Mx4rvVihUZwpEbGdrcN5Y29ycA	eating utensil
+eating utensil	FoodUtensil	Mx4rvVjNzpwpEbGdrcN5Y29ycA	tool
+person with an occupation	PersonWithOccupation	Mx4rvVjnN5wpEbGdrcN5Y29ycA	person
+dog	Dog	Mx4rvVjaoJwpEbGdrcN5Y29ycA	mammal
+cat	Cat	Mx4rvVkFc5wpEbGdrcN5Y29ycA	mammal
+horse	Horse	Mx4rwQBg3ZwpEbGdrcN5Y29ycA	mammal
+cow	Cow	Mx4rwOz9NJwpEbGdrcN5Y29ycA	mammal
+pig	Pig	Mx4rvViuYZwpEbGdrcN5Y29ycA	mammal
+sheep	Sheep	Mx4rvVjk95wpEbGdrcN5Y29ycA	mammal
+chicken	Chicken	Mx4rvVkCDZwpEbGdrcN5Y29ycA	bird
+duck	Duck	Mx4rvVj4kJwpEbGdrcN5Y29ycA	bird
+mouse	HouseMouse	Mx4r151yQPAjQdaP_tkg0H18ow	mammal
+rat	Rat	Mx4rvVi7r5wpEbGdrcN5Y29ycA	mammal
+lion	Lion	Mx4rvVjEZ5wpEbGdrcN5Y29ycA	mammal
+tiger	Tiger	Mx4rvVijVpwpEbGdrcN5Y29ycA	mammal
+bear	Bear-Animal	Mx4rvVjGfpwpEbGdrcN5Y29ycA	mammal
+wolf	Wolf	Mx4rvVjDH5wpEbGdrcN5Y29ycA	mammal
+fox	Fox	Mx4rvVi-h5wpEbGdrcN5Y29ycA	mammal
+rabbit	Rabbit	Mx4rvVjELZwpEbGdrcN5Y29ycA	mammal
+deer	Deer	Mx4rvVi-jpwpEbGdrcN5Y29ycA	mammal
+elephant	Elephant	Mx4rvViVeJwpEbGdrcN5Y29ycA	mammal
+monkey	Monkey	Mx4rvVjta5wpEbGdrcN5Y29ycA	mammal
+whale	Whale	Mx4rvVjcKpwpEbGdrcN5Y29ycA	mammal
+dolphin	Dolphin	Mx4rvVj0wpwpEbGdrcN5Y29ycA	whale
+bat	Bat-Mammal	Mx4rvViSgJwpEbGdrcN5Y29ycA	mammal
+snake	Snake	Mx4rvViT7pwpEbGdrcN5Y29ycA	reptile
+lizard	Lizard	Mx4rvVjwr5wpEbGdrcN5Y29ycA	reptile
+turtle	Turtle	Mx4rvVj4wJwpEbGdrcN5Y29ycA	reptile
+frog	Frog	Mx4rvVjcS5wpEbGdrcN5Y29ycA	amphibian
+shark	Shark	Mx4rwP1mpZwpEbGdrcN5Y29ycA	fish
+salmon	Salmon	Mx4rvVi87pwpEbGdrcN5Y29ycA	fish
+eagle	Eagle	Mx4rvViGopwpEbGdrcN5Y29ycA	bird
+owl	Owl	Mx4rvVjvDJwpEbGdrcN5Y29ycA	bird
+penguin	Penguin	Mx4rvViphpwpEbGdrcN5Y29ycA	bird
+bee	Bee	Mx4rvVkHLZwpEbGdrcN5Y29ycA	insect
+ant	Ant	Mx4rvVjecpwpEbGdrcN5Y29ycA	insect
+butterfly	Butterfly	Mx4rwP1eaJwpEbGdrcN5Y29ycA	insect
+spider	Spider	Mx4rvVjCnZwpEbGdrcN5Y29ycA	animal
+tree	Tree-ThePlant	Mx4rvVjPdZwpEbGdrcN5Y29ycA	place, plant
+flower	Flower-BotanicalPart	Mx4rvVkGk5wpEbGdrcN5Y29ycA	living thing
+grass	Grass-Plant	Mx4rvViZVpwpEbGdrcN5Y29ycA	plant
+apple	(FruitFn AppleTree)	Mx8Ngh4rvVipdpwpEbGdrcN5Y29ycB4rvVjBnZwpEbGdrcN5Y29ycA	fruit
+banana	(FruitFn BananaTree)	Mx8Ngh4rvVipdpwpEbGdrcN5Y29ycB4rvViwXZwpEbGdrcN5Y29ycA	fruit
+orange	(FruitFn OrangeTree)	Mx8Ngh4rvVipdpwpEbGdrcN5Y29ycB4rvVicrZwpEbGdrcN5Y29ycA	fruit
+grape	(FruitFn GrapeVine)	Mx8Ngh4rvVipdpwpEbGdrcN5Y29ycB4rvVixlpwpEbGdrcN5Y29ycA	fruit
+strawberry	(FruitFn StrawberryPlant)	Mx8Ngh4rvVipdpwpEbGdrcN5Y29ycB4rvVisvpwpEbGdrcN5Y29ycA	fruit, organ
+lemon	(FruitFn LemonTree)	Mx8Ngh4rvVipdpwpEbGdrcN5Y29ycB4rvVicb5wpEbGdrcN5Y29ycA	fruit
+carrot	Carrot-Foodstuff	Mx4rwQCF3JwpEbGdrcN5Y29ycA	vegetable
+potato	(RootFn PotatoPlant)	Mx8Ngh4rwP3oNZwpEbGdrcN5Y29ycB4rvViDtJwpEbGdrcN5Y29ycA	living thing
+tomato	(FruitFn TomatoPlant)	Mx8Ngh4rvVipdpwpEbGdrcN5Y29ycB4rvVi0pZwpEbGdrcN5Y29ycA	living thing
+onion	Onion-Foodstuff	Mx4rwQCWWZwpEbGdrcN5Y29ycA	vegetable
+lettuce	Lettuce-Foodstuff	Mx4rwQCacZwpEbGdrcN5Y29ycA	vegetable
+bread	Bread	Mx4rvVjMeZwpEbGdrcN5Y29ycA	food
+cheese	Cheese	Mx4rvVjOAZwpEbGdrcN5Y29ycA	dairy product, food
+butter	Butter	Mx4rvVj3aZwpEbGdrcN5Y29ycA	dairy product
+milk	Milk	Mx4rvVjGZJwpEbGdrcN5Y29ycA	liquid
+yogurt	Yogurt	Mx4rvVjlNJwpEbGdrcN5Y29ycA	dairy product, food
+egg	Egg	Mx4rvbafcZwpEbGdrcN5Y29ycA	living thing
+rice	Rice-Foodstuff	Mx4rwQCgLpwpEbGdrcN5Y29ycA	food
+pasta	Pasta	Mx4rvVwG3JwpEbGdrcN5Y29ycA	artifact, food
+soup	Soup	Mx4rvVj2XJwpEbGdrcN5Y29ycA	artifact, food, liquid
+cake	Cake	Mx4rvViDipwpEbGdrcN5Y29ycA	artifact, food
+cookie	Cookie	Mx4rvViDSJwpEbGdrcN5Y29ycA	artifact, food
+chocolate	Chocolate	Mx4rvVjMWJwpEbGdrcN5Y29ycA	artifact, food
+beef	Beef	Mx4rvVkCj5wpEbGdrcN5Y29ycA	meat
+pork	Pork	Mx4rvVjuf5wpEbGdrcN5Y29ycA	meat
+chicken meat	Chicken-Meat	Mx4rvVjJlpwpEbGdrcN5Y29ycA	meat
+sandwich	Sandwich	Mx4rwQB8jpwpEbGdrcN5Y29ycA	artifact, food
+pizza	Pizza	Mx4rvVibapwpEbGdrcN5Y29ycA	artifact, food
+water	Water	Mx4rvVjAHZwpEbGdrcN5Y29ycA	tangible thing
+coffee	Coffee-Beverage	Mx4rvVkEXpwpEbGdrcN5Y29ycA	artifact, drink
+tea	Tea-Beverage	Mx4rvViLDpwpEbGdrcN5Y29ycA	artifact, drink
+juice	Juice	Mx4rvVjM2ZwpEbGdrcN5Y29ycA	drink
+beer	Beer	Mx4rvVjRpZwpEbGdrcN5Y29ycA	artifact, drink
+wine	Wine	Mx4rvViYF5wpEbGdrcN5Y29ycA	artifact, drink
+table	Table-PieceOfFurniture	Mx4rvViZ9JwpEbGdrcN5Y29ycA	furniture
+chair	Chair-PieceOfFurniture	Mx4rvVjo_ZwpEbGdrcN5Y29ycA	device, furniture
+bed	Bed-PieceOfFurniture	Mx4rvVjeFJwpEbGdrcN5Y29ycA	furniture
+sofa	Sofa-PieceOfFurniture	Mx4rvVjfFJwpEbGdrcN5Y29ycA	device, furniture
+desk	Desk-PieceOfFurniture	Mx4rvVjfVpwpEbGdrcN5Y29ycA	container, device, table
+shelf	Shelf	Mx4rvVjY_5wpEbGdrcN5Y29ycA	container, device
+lamp	LightingDevice	Mx4rvVil7JwpEbGdrcN5Y29ycA	device
+cup	Cup	Mx4rGHQaMkC6EdqAAAACs71DGQ	container, device
+mug	DrinkingMug	Mx4rvViE2JwpEbGdrcN5Y29ycA	container, device
+glass	DrinkingGlass	Mx4rvVinrpwpEbGdrcN5Y29ycA	container, device
+plate	DinnerPlate	Mx4rvVifQ5wpEbGdrcN5Y29ycA	container, device
+bowl	Bowl-Eating	Mx4rvVjdRZwpEbGdrcN5Y29ycA	container, device
+fork	Fork-SilverwarePiece	Mx4rvVinX5wpEbGdrcN5Y29ycA	eating utensil
+knife	Knife	Mx4rvVioJ5wpEbGdrcN5Y29ycA	tool
+spoon	Spoon	Mx4rvVj1iZwpEbGdrcN5Y29ycA	container, eating utensil
+pot	StoveTopCookingPot	Mx4rvViUMJwpEbGdrcN5Y29ycA	container, device
+frying pan	Skillet	Mx4rvVi7KpwpEbGdrcN5Y29ycA	container, device
+bottle	Bottle	Mx4rvVjslpwpEbGdrcN5Y29ycA	container, device
+box	Box-Container	Mx4rvVjQXpwpEbGdrcN5Y29ycA	container, device
+bag	Bag	Mx4rvViVAJwpEbGdrcN5Y29ycA	container, device
+refrigerator	Refrigerator	Mx4rvViddJwpEbGdrcN5Y29ycA	container, electrical device
+oven	Oven	Mx4rvViZrJwpEbGdrcN5Y29ycA	box
+stove	StoveTop	Mx4rvViGo5wpEbGdrcN5Y29ycA	tangible thing
+microwave oven	MicrowaveOven	Mx4rvVi5pJwpEbGdrcN5Y29ycA	electrical device, oven
+dishwasher	Dishwasher	Mx4rvVjJdZwpEbGdrcN5Y29ycA	electrical device
+washing machine	ClothesWasher	Mx4rvVivHZwpEbGdrcN5Y29ycA	electrical device
+book	BookCopy	Mx4rwJaXepwpEbGdrcN5Y29ycA	artifact
+pen	WritingPen	Mx4rvViISpwpEbGdrcN5Y29ycA	container, tool
+pencil	Pencil	Mx4rvVjLfJwpEbGdrcN5Y29ycA	tool
+paper	SheetOfPaper	Mx4rvVjpnJwpEbGdrcN5Y29ycA	device
+scissors	Scissors	Mx4rvVizM5wpEbGdrcN5Y29ycA	tool
+stapler	Stapler	Mx4rwQBWbJwpEbGdrcN5Y29ycA	tool
+telephone	Telephone	Mx4rvVjTBZwpEbGdrcN5Y29ycA	electrical device
+cell phone	CellularTelephone	Mx4rvVjj6pwpEbGdrcN5Y29ycA	telephone
+television	TelevisionSet	Mx4rvVjIZpwpEbGdrcN5Y29ycA	electrical device
+radio	RadioReceiver	Mx4rwP1jBZwpEbGdrcN5Y29ycA	electrical device
+camera	Camera	Mx4rvWAmAJwpEbGdrcN5Y29ycA	device
+keyboard	ComputerKeyboard	Mx4rvVjL6JwpEbGdrcN5Y29ycA	electrical device
+clock	Clock	Mx4rvVjz8pwpEbGdrcN5Y29ycA	device
+watch	Watch	Mx4rvwP3X5wpEbGdrcN5Y29ycA	clock
+hammer	Hammer	Mx4rvVjSApwpEbGdrcN5Y29ycA	tool
+screwdriver	Screwdriver	Mx4rvVjeYpwpEbGdrcN5Y29ycA	tool
+saw	Saw	Mx4rOrzKa4CfRQiiuLoRsVZwsQ	device
+wrench	Wrench	Mx4rvVkJTZwpEbGdrcN5Y29ycA	tool
+shovel	Shovel	Mx4rvVj_w5wpEbGdrcN5Y29ycA	tool
+ladder	Ladder	Mx4rvVjkQ5wpEbGdrcN5Y29ycA	tool
+gun	Gun	Mx4rwQBuo5wpEbGdrcN5Y29ycA	device, weapon
+sword	Sword	Mx4rvVj_15wpEbGdrcN5Y29ycA	device, weapon
+car	Automobile	Mx4rvViVwZwpEbGdrcN5Y29ycA	road vehicle
+truck	Truck	Mx4rvVizgZwpEbGdrcN5Y29ycA	road vehicle
+bus	Bus-RoadVehicle	Mx4rvVi0v5wpEbGdrcN5Y29ycA	road vehicle
+bicycle	Bicycle	Mx4rvVjo0JwpEbGdrcN5Y29ycA	device
+motorcycle	Motorcycle	Mx4rvVkEdJwpEbGdrcN5Y29ycA	road vehicle
+train	Train-TransportationDevice	Mx4rvVjIJZwpEbGdrcN5Y29ycA	container, device
+airplane	Airplane	Mx4rvViCi5wpEbGdrcN5Y29ycA	aircraft
+helicopter	Helicopter	Mx4rvViuEJwpEbGdrcN5Y29ycA	aircraft, container
+boat	Boat	Mx4rIDj6hi6jEdqAAAACs71DGQ	watercraft
+ship	Ship	Mx4rvVirIJwpEbGdrcN5Y29ycA	watercraft
+shirt	Shirt	Mx4rvViBOZwpEbGdrcN5Y29ycA	clothing
+trousers	Pants	Mx4rwPvIyJwpEbGdrcN5Y29ycA	clothing
+dress	Dress	Mx4rvVi0N5wpEbGdrcN5Y29ycA	clothing
+skirt	Skirt	Mx4rvVjdTpwpEbGdrcN5Y29ycA	clothing
+coat	Coat	Mx4rvVjhHpwpEbGdrcN5Y29ycA	clothing
+jacket	Jacket	Mx4rvViWxZwpEbGdrcN5Y29ycA	coat
+shoe	Shoe	Mx4rvVik6JwpEbGdrcN5Y29ycA	clothing
+sock	Sock	Mx4rvViPuJwpEbGdrcN5Y29ycA	clothing
+hat	Hat	Mx4rvVilJZwpEbGdrcN5Y29ycA	clothing
+glove	Glove	Mx4rvViztpwpEbGdrcN5Y29ycA	clothing
+house	House-Modern	Mx4rvVih-5wpEbGdrcN5Y29ycA	building
+apartment	ApartmentUnit	Mx4rvVixF5wpEbGdrcN5Y29ycA	container, device, place
+school	SchoolBuilding	Mx4rvVjifZwpEbGdrcN5Y29ycA	building
+hospital	HospitalBuilding	Mx4rvVjptJwpEbGdrcN5Y29ycA	building
+church	Church-Building	Mx4rvVif_pwpEbGdrcN5Y29ycA	building
+kitchen	Kitchen	Mx4rvVifPJwpEbGdrcN5Y29ycA	room
+bedroom	Bedroom	Mx4rvVjQqZwpEbGdrcN5Y29ycA	room
+bathroom	Bathroom	Mx4rj_TbOCmDQdecrvhdjRWehQ	room
+office	OfficeRoom	Mx4rvVi5zpwpEbGdrcN5Y29ycA	room
+door	DoorInABuilding	Mx4rvVj4UZwpEbGdrcN5Y29ycA	artifact
+window	WindowPortal	Mx4rvVj5V5wpEbGdrcN5Y29ycA	artifact
+city	City	Mx4rvVjnZ5wpEbGdrcN5Y29ycA	geographical region
+country	Country	Mx4rvViIeZwpEbGdrcN5Y29ycA	geographical region
+mountain	Mountain	Mx4rvVjODZwpEbGdrcN5Y29ycA	geographical region
+river	River	Mx4rvVkHM5wpEbGdrcN5Y29ycA	body of water
+lake	Lake	Mx4rvVi4IpwpEbGdrcN5Y29ycA	body of water
+ocean	Ocean	Mx4rvVjktpwpEbGdrcN5Y29ycA	sea
+sea	Sea	Mx4rvVjMf5wpEbGdrcN5Y29ycA	body of water
+island	Island	Mx4rvVi7OZwpEbGdrcN5Y29ycA	geographical region
+forest	Forest	Mx4rwVAaWpwpEbGdrcN5Y29ycA	geographical region
+desert	Desert	Mx4rvVjreZwpEbGdrcN5Y29ycA	geographical region
+child	HumanChild	Mx4rvVjPMJwpEbGdrcN5Y29ycA	person
+adult	HumanAdult	Mx4rvViy-ZwpEbGdrcN5Y29ycA	person
+man	MaleHuman	Mx4rvVjWoZwpEbGdrcN5Y29ycA	person
+woman	FemaleHuman	Mx4rvVjW5ZwpEbGdrcN5Y29ycA	person
+doctor	Doctor-Medical	Mx4rvVjrVZwpEbGdrcN5Y29ycA	adult, person with an occupation
+nurse	Nurse	Mx4rvViV3pwpEbGdrcN5Y29ycA	adult, person with an occupation
+teacher	Teacher	Mx4rvVkFrJwpEbGdrcN5Y29ycA	person with an occupation
+student	Student	Mx4rvViNGpwpEbGdrcN5Y29ycA	person with an occupation
+police officer	PoliceOfficer-Municipal	Mx4rgZcQmrrMEdaAAAACs6Mw3A	adult, person with an occupation
+farmer	Farmer	Mx4rvVjhSZwpEbGdrcN5Y29ycA	person with an occupation
+head	Head-AnimalBodyPart	Mx4rvVi6YJwpEbGdrcN5Y29ycA	body part
+hand	Hand	Mx4rvViGVZwpEbGdrcN5Y29ycA	body part
+foot	Foot-AnimalBodyPart	Mx4rvVi-k5wpEbGdrcN5Y29ycA	body part
+arm	Arm	Mx4rvVjp5ZwpEbGdrcN5Y29ycA	body part
+leg	Leg	Mx4rvViYzZwpEbGdrcN5Y29ycA	body part
+eye	Eye	Mx4rvViTvpwpEbGdrcN5Y29ycA	organ
+ear	Ear	Mx4rvVjL05wpEbGdrcN5Y29ycA	body part
+nose	Nose	Mx4rvViCbJwpEbGdrcN5Y29ycA	organ
+mouth	Mouth	Mx4rvVidh5wpEbGdrcN5Y29ycA	body part
+heart	Heart	Mx4rvVjvDpwpEbGdrcN5Y29ycA	organ
+brain	Brain	Mx4rvVjT65wpEbGdrcN5Y29ycA	organ
