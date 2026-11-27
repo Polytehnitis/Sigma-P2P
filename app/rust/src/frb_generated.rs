@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 269936221;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -317861680;
 
 // Section: executor
 
@@ -150,6 +150,82 @@ fn wire__crate__api__agent__create_pairing_code_impl(
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move || {
                     let output_ok = crate::api::agent::create_pairing_code()?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__agent__describe_action_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "describe_action",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_)
+            };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_action = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let output_ok = Ok::<_, ()>(crate::api::agent::describe_action(api_action))?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
+fn wire__crate__api__agent__desktop_control_supported_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "desktop_control_supported",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_)
+            };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let output_ok = Ok::<_, ()>(crate::api::agent::desktop_control_supported())?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
+fn wire__crate__api__agent__desktop_status_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "desktop_status",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_)
+            };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move || {
+                    let output_ok = crate::api::agent::desktop_status()?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -436,6 +512,89 @@ fn wire__crate__api__agent__set_action_rules_impl(
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move || {
                     let output_ok = crate::api::agent::set_action_rules(api_rules)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__agent__set_desktop_control_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "set_desktop_control",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_)
+            };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_enabled = <bool>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move || {
+                    let output_ok = crate::api::agent::set_desktop_control(api_enabled)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__agent__set_screen_perception_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "set_screen_perception",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_)
+            };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_enabled = <bool>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move || {
+                    let output_ok = crate::api::agent::set_screen_perception(api_enabled)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__agent__stop_desktop_control_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "stop_desktop_control",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_)
+            };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move || {
+                    let output_ok = crate::api::agent::stop_desktop_control()?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -732,6 +891,8 @@ impl SseDecode for crate::api::agent::CognitiveStep {
         let mut var_awaitingConfirmation = <Option<crate::api::agent::ConfirmationRequest>>::sse_decode(deserializer);
         let mut var_motorCommands = <Vec<String>>::sse_decode(deserializer);
         let mut var_undoStack = <Vec<String>>::sse_decode(deserializer);
+        let mut var_desktopEvents = <Vec<crate::api::agent::DesktopEvent>>::sse_decode(deserializer);
+        let mut var_desktop = <crate::api::agent::DesktopStatus>::sse_decode(deserializer);
         return crate::api::agent::CognitiveStep {
             goal_stack: var_goalStack,
             selected_action: var_selectedAction,
@@ -744,6 +905,8 @@ impl SseDecode for crate::api::agent::CognitiveStep {
             awaiting_confirmation: var_awaitingConfirmation,
             motor_commands: var_motorCommands,
             undo_stack: var_undoStack,
+            desktop_events: var_desktopEvents,
+            desktop: var_desktop,
         };
     }
 }
@@ -785,6 +948,32 @@ impl SseDecode for crate::api::agent::DecisionImpasseKind {
             2 => crate::api::agent::DecisionImpasseKind::NoChange,
             3 => crate::api::agent::DecisionImpasseKind::Conflict,
             _ => unreachable!("Invalid variant for DecisionImpasseKind: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::agent::DesktopEvent {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_action = <String>::sse_decode(deserializer);
+        let mut var_message = <String>::sse_decode(deserializer);
+        let mut var_ok = <bool>::sse_decode(deserializer);
+        return crate::api::agent::DesktopEvent { action: var_action, message: var_message, ok: var_ok };
+    }
+}
+
+impl SseDecode for crate::api::agent::DesktopStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_supported = <bool>::sse_decode(deserializer);
+        let mut var_control = <bool>::sse_decode(deserializer);
+        let mut var_perception = <bool>::sse_decode(deserializer);
+        let mut var_focusedApp = <Option<String>>::sse_decode(deserializer);
+        return crate::api::agent::DesktopStatus {
+            supported: var_supported,
+            control: var_control,
+            perception: var_perception,
+            focused_app: var_focusedApp,
         };
     }
 }
@@ -919,6 +1108,18 @@ impl SseDecode for Vec<crate::api::agent::Belief> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::api::agent::Belief>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::agent::DesktopEvent> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::agent::DesktopEvent>::sse_decode(deserializer));
         }
         return ans_;
     }
@@ -1159,23 +1360,27 @@ fn pde_ffi_dispatcher_primary_impl(
         2 => wire__crate__api__agent__cancel_pending_action_impl(port, ptr, rust_vec_len, data_len),
         3 => wire__crate__api__agent__confirm_action_impl(port, ptr, rust_vec_len, data_len),
         4 => wire__crate__api__agent__create_pairing_code_impl(port, ptr, rust_vec_len, data_len),
-        5 => wire__crate__api__agent__forget_phrase_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__agent__init_agent_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__agent__init_app_impl(port, ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__agent__interpret_utterance_impl(port, ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__agent__pair_device_impl(port, ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__agent__paired_devices_impl(port, ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__agent__perceive_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__agent__provide_feedback_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__agent__run_cognitive_step_impl(port, ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__agent__set_action_rules_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__agent__sync_now_impl(port, ptr, rust_vec_len, data_len),
-        16 => wire__crate__api__agent__taught_phrases_impl(port, ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__agent__teach_and_share_skill_impl(port, ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__agent__teach_phrase_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__agent__trust_peer_author_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__agent__undo_last_action_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__agent__unpair_device_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__agent__desktop_status_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__agent__forget_phrase_impl(port, ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__agent__init_agent_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__agent__init_app_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__agent__interpret_utterance_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__agent__pair_device_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__agent__paired_devices_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__agent__perceive_impl(port, ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__agent__provide_feedback_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__agent__run_cognitive_step_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__agent__set_action_rules_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__agent__set_desktop_control_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__agent__set_screen_perception_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__agent__stop_desktop_control_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__agent__sync_now_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__agent__taught_phrases_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__agent__teach_and_share_skill_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__agent__teach_phrase_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__agent__trust_peer_author_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__agent__undo_last_action_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__agent__unpair_device_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1188,6 +1393,8 @@ fn pde_ffi_dispatcher_sync_impl(
 ) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
+        5 => wire__crate__api__agent__describe_action_impl(ptr, rust_vec_len, data_len),
+        6 => wire__crate__api__agent__desktop_control_supported_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1274,6 +1481,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::agent::CognitiveStep {
             self.awaiting_confirmation.into_into_dart().into_dart(),
             self.motor_commands.into_into_dart().into_dart(),
             self.undo_stack.into_into_dart().into_dart(),
+            self.desktop_events.into_into_dart().into_dart(),
+            self.desktop.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -1334,6 +1543,41 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::agent::DecisionImpasseKind>
     for crate::api::agent::DecisionImpasseKind
 {
     fn into_into_dart(self) -> crate::api::agent::DecisionImpasseKind {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::agent::DesktopEvent {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.action.into_into_dart().into_dart(),
+            self.message.into_into_dart().into_dart(),
+            self.ok.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::agent::DesktopEvent {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::agent::DesktopEvent> for crate::api::agent::DesktopEvent {
+    fn into_into_dart(self) -> crate::api::agent::DesktopEvent {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::agent::DesktopStatus {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.supported.into_into_dart().into_dart(),
+            self.control.into_into_dart().into_dart(),
+            self.perception.into_into_dart().into_dart(),
+            self.focused_app.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::agent::DesktopStatus {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::agent::DesktopStatus> for crate::api::agent::DesktopStatus {
+    fn into_into_dart(self) -> crate::api::agent::DesktopStatus {
         self
     }
 }
@@ -1621,6 +1865,8 @@ impl SseEncode for crate::api::agent::CognitiveStep {
         <Option<crate::api::agent::ConfirmationRequest>>::sse_encode(self.awaiting_confirmation, serializer);
         <Vec<String>>::sse_encode(self.motor_commands, serializer);
         <Vec<String>>::sse_encode(self.undo_stack, serializer);
+        <Vec<crate::api::agent::DesktopEvent>>::sse_encode(self.desktop_events, serializer);
+        <crate::api::agent::DesktopStatus>::sse_encode(self.desktop, serializer);
     }
 }
 
@@ -1658,6 +1904,25 @@ impl SseEncode for crate::api::agent::DecisionImpasseKind {
             },
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::api::agent::DesktopEvent {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.action, serializer);
+        <String>::sse_encode(self.message, serializer);
+        <bool>::sse_encode(self.ok, serializer);
+    }
+}
+
+impl SseEncode for crate::api::agent::DesktopStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.supported, serializer);
+        <bool>::sse_encode(self.control, serializer);
+        <bool>::sse_encode(self.perception, serializer);
+        <Option<String>>::sse_encode(self.focused_app, serializer);
     }
 }
 
@@ -1789,6 +2054,16 @@ impl SseEncode for Vec<crate::api::agent::Belief> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::api::agent::Belief>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::agent::DesktopEvent> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::agent::DesktopEvent>::sse_encode(item, serializer);
         }
     }
 }

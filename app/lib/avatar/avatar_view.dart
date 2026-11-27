@@ -26,6 +26,7 @@ class SigmaAvatar extends StatefulWidget {
     this.alwaysShowControls = false,
     this.onListen,
     this.listening = false,
+    this.onStopDesktop,
   });
 
   final AvatarMood mood;
@@ -49,6 +50,9 @@ class SigmaAvatar extends StatefulWidget {
 
   /// Sigma is listening: the mic button lights up and the character looks at the user.
   final bool listening;
+
+  /// Set while Sigma may use the mouse and keyboard: a Stop button is always shown.
+  final VoidCallback? onStopDesktop;
 
   @override
   State<SigmaAvatar> createState() => _SigmaAvatarState();
@@ -139,6 +143,11 @@ class _SigmaAvatarState extends State<SigmaAvatar>
         Offset.zero & MediaQuery.sizeOf(context),
       ),
       items: [
+        if (widget.onStopDesktop != null)
+          const PopupMenuItem(
+            value: 'stop-desktop',
+            child: Text('Stop using my mouse and keyboard'),
+          ),
         if (widget.onThink != null)
           const PopupMenuItem(value: 'think', child: Text('Think now')),
         if (widget.onListen != null)
@@ -163,6 +172,8 @@ class _SigmaAvatarState extends State<SigmaAvatar>
       ],
     );
     switch (choice) {
+      case 'stop-desktop':
+        widget.onStopDesktop?.call();
       case 'think':
         widget.onThink?.call();
       case 'listen':
@@ -236,6 +247,19 @@ class _SigmaAvatarState extends State<SigmaAvatar>
               mainAxisAlignment: MainAxisAlignment.center,
               spacing: 4,
               children: [
+                if (widget.onStopDesktop != null)
+                  IconButton.filled(
+                    key: const Key('avatar-stop-desktop'),
+                    tooltip: 'Stop using my mouse and keyboard',
+                    iconSize: 18,
+                    visualDensity: VisualDensity.compact,
+                    style: IconButton.styleFrom(
+                      backgroundColor: Theme.of(context).colorScheme.error,
+                      foregroundColor: Theme.of(context).colorScheme.onError,
+                    ),
+                    onPressed: widget.onStopDesktop,
+                    icon: const Icon(Icons.pan_tool),
+                  ),
                 if (widget.busy)
                   const SizedBox.square(
                     dimension: 16,

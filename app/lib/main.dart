@@ -56,6 +56,11 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
   List<String> _undoStack = const [];
   bool _busy = false;
 
+  /// Keyboard, mouse and screen: off at every start until the user turns them on.
+  final _desktopSupported = desktopControlSupported();
+  DesktopStatus? _desktop;
+  List<DesktopEvent> _desktopLog = const [];
+
   /// Desktop avatar mode: the window becomes a small always-on-top companion.
   bool _avatar = false;
   final _avatarWindow = AvatarWindow();
@@ -240,11 +245,149 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
   Future<void> _cycle(List<Evidence> evidence, List<String> goals) async {
     final step = await runCognitiveStep(evidence: evidence, activeGoals: goals);
     if (!mounted) return;
+    final wasOn = _desktop?.control ?? false;
     setState(() {
       _step = step;
       _pending = step.awaitingConfirmation;
       _undoStack = step.undoStack;
+      _desktop = step.desktop;
+      if (step.desktopEvents.isNotEmpty) {
+        _desktopLog = [...step.desktopEvents, ..._desktopLog].take(8).toList();
+      }
     });
+    final failed = step.desktopEvents.where((e) => !e.ok).firstOrNull;
+    if (failed != null) {
+      _toast('Could not ${_actionWords(failed.action)}: ${failed.message}');
+    } else if (wasOn && !step.desktop.control) {
+      _toast('Stopped using your mouse and keyboard');
+    }
+  }
+
+  // ---- Desktop control -----------------------------------------------------
+
+  /// Plain words for an action: desktop actions are described, others humanized.
+  String _actionWords(String action) => action.startsWith('desktop.')
+      ? describeAction(action: action)
+      : humanize(action);
+
+  Future<void> _setDesktopControl(bool on) async {
+    if (on && !await _askDesktopControl()) return;
+    await _guard(() async {
+      final s = await setDesktopControl(enabled: on);
+      setState(() => _desktop = s);
+      if (on) _toast('Sigma may use your mouse and keyboard');
+    });
+  }
+
+  Future<void> _setScreenPerception(bool on) => _guard(() async {
+    final s = await setScreenPerception(enabled: on);
+    setState(() => _desktop = s);
+  });
+
+  /// Not behind [_guard]: Stop works while an action or a step is still running.
+  Future<void> _stopDesktop() async {
+    try {
+      final s = await stopDesktopControl();
+      if (!mounted) return;
+      setState(() {
+        _desktop = s;
+        if (_pending?.action.startsWith('desktop.') ?? false) _pending = null;
+      });
+      _toast('Stopped using your mouse and keyboard');
+    } catch (e) {
+      _toast('$e');
+    }
+  }
+
+  Future<bool> _askDesktopControl() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        icon: const Icon(Icons.mouse),
+        title: const Text('Let Sigma use your mouse and keyboard?'),
+        content: const Text(
+          'Sigma may then move the pointer and scroll on its own. Every '
+          'click, key press and piece of typing waits for you to tap '
+          'Confirm, each time.\n\n'
+          'To stop Sigma at once: tap Stop, say "stop", or push your mouse '
+          'into the top-left corner of the screen. It is off again whenever '
+          'Sigma restarts.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Allow'),
+          ),
+        ],
+      ),
+    );
+    return ok == true;
+  }
+
+  Widget _desktopSection() {
+    final d = _desktop;
+    final control = d?.control ?? false;
+    return _section('Desktop', [
+      SwitchListTile(
+        key: const Key('desktop-control'),
+        contentPadding: EdgeInsets.zero,
+        secondary: const Icon(Icons.mouse),
+        title: const Text('Let Sigma use my mouse and keyboard'),
+        subtitle: const Text(
+          'Clicks, keys and typing wait for your Confirm. Push the mouse into '
+          'the top-left corner to stop.',
+        ),
+        value: control,
+        onChanged: _busy ? null : _setDesktopControl,
+      ),
+      SwitchListTile(
+        key: const Key('desktop-perception'),
+        contentPadding: EdgeInsets.zero,
+        secondary: const Icon(Icons.visibility),
+        title: const Text('Let Sigma see my screen'),
+        subtitle: Text(
+          d?.focusedApp == null
+              ? 'Before each step: did the screen change, which app is in '
+                    'front. Nothing is stored or sent.'
+              : 'In front: ${d!.focusedApp}',
+        ),
+        value: d?.perception ?? false,
+        onChanged: _busy ? null : _setScreenPerception,
+      ),
+      if (control || (d?.perception ?? false))
+        Align(
+          alignment: Alignment.centerLeft,
+          child: FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: _stopDesktop,
+            icon: const Icon(Icons.pan_tool),
+            label: const Text('Stop'),
+          ),
+        ),
+      const Text(
+        'Teach Sigma desktop skills with actions such as '
+        'desktop.click(640,360), desktop.type(hello), desktop.key(ctrl+s), '
+        'desktop.scroll(3) or desktop.move(100,200). It sees the screen as '
+        'desktop.screen_changed, desktop.user_moved_mouse and '
+        'desktop.app.<name>.',
+        style: TextStyle(fontSize: 12),
+      ),
+      for (final e in _desktopLog)
+        ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(e.ok ? Icons.check : Icons.error_outline),
+          title: Text(e.ok ? e.message : _actionWords(e.action)),
+          subtitle: e.ok ? null : Text(e.message),
+        ),
+    ]);
   }
 
   // ---- Voice ---------------------------------------------------------------
@@ -347,7 +490,7 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
   void _reply(VoiceReply reply) {
     final pending = _pending;
     final text = pending != null && !reply.text.contains('Confirm')
-        ? '${reply.text} I need your OK to ${humanize(pending.action)}: '
+        ? '${reply.text} I need your OK to ${_actionWords(pending.action)}: '
               'tap Confirm.'
         : reply.text;
     _toast(text);
@@ -395,8 +538,10 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
     setState(() => _undoStack = _undoStack.sublist(0, _undoStack.length - 1));
   }
 
+  /// "Stop" or "cancel": drops the waiting action, and takes back the mouse and keyboard.
   @override
   Future<void> cancel() async {
+    if (_desktop?.control ?? false) await _stopDesktop();
     await cancelPendingAction();
     setState(() => _pending = null);
   }
@@ -422,7 +567,7 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
   // The token comes only from this button: engine and skill data never carry it.
   Future<void> _confirm(ConfirmationRequest req) => _guard(() async {
     setState(() => _pending = null);
-    _toast('Confirmed ${await confirmAction(token: req.token)}');
+    _toast('Done: ${_actionWords(await confirmAction(token: req.token))}');
   });
 
   Future<void> _cancelPending() => _guard(() async {
@@ -518,7 +663,7 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
           _note ??
           (_pending == null
               ? null
-              : 'May I ${humanize(_pending!.action)}? '
+              : 'May I ${_actionWords(_pending!.action)}? '
                     'Double-click me to confirm.'),
       busy: _busy,
       onThink: _info == null ? null : (_step == null ? _run : _think),
@@ -532,6 +677,7 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
         _scheduleHeartbeat();
       },
       alwaysShowControls: !AvatarWindow.supported,
+      onStopDesktop: (_desktop?.control ?? false) ? _stopDesktop : null,
     );
     if (AvatarWindow.supported) {
       return Material(
@@ -560,6 +706,20 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
       appBar: AppBar(
         title: const Text('Sigma cognitive agent'),
         actions: [
+          if (_desktop?.control ?? false)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: FilledButton.icon(
+                key: const Key('desktop-stop'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(context).colorScheme.error,
+                  foregroundColor: Theme.of(context).colorScheme.onError,
+                ),
+                onPressed: _stopDesktop,
+                icon: const Icon(Icons.pan_tool),
+                label: const Text('Stop'),
+              ),
+            ),
           if (_info != null)
             IconButton(
               key: const Key('voice-listen'),
@@ -721,6 +881,7 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
                   ],
                 ),
             ]),
+          if (_info != null && _desktopSupported) _desktopSection(),
           if (_info != null)
             _section('Goal', [
               _field(_goal, 'Top-level goal'),
@@ -778,8 +939,13 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
                   color: Theme.of(context).colorScheme.tertiaryContainer,
                   child: ListTile(
                     leading: const Icon(Icons.warning_amber),
-                    title: Text('Confirm ${req.action}?'),
-                    subtitle: const Text('This action cannot be undone.'),
+                    title: Text('Confirm: ${_actionWords(req.action)}?'),
+                    subtitle: Text(
+                      req.action.startsWith('desktop.')
+                          ? 'Sigma will use your mouse or keyboard. '
+                                'This cannot be undone.'
+                          : 'This action cannot be undone.',
+                    ),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [

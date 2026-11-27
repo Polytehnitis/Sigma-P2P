@@ -18,7 +18,7 @@
 //! state or storage, and so cannot come from engine state, skill data or a peer: the host
 //! hands it to its UI, and the UI hands it back when the user approves.
 
-use crate::{crypto, NodeIdentity, SigmaEngine};
+use crate::{crypto, desktop, NodeIdentity, SigmaEngine};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -149,8 +149,14 @@ impl SigmaEngine {
     }
 
     /// Whether `action` must be confirmed by the user before it reaches the motor buffer.
+    /// Desktop actions follow their built-in rule (see [`crate::desktop`]); a spec can only
+    /// make one stricter.
     pub fn needs_confirmation(&self, action: &str) -> bool {
-        self.safety.specs.get(action).map_or(self.confirm_unlisted_actions, |s| s.irreversible)
+        let spec = self.safety.specs.get(action);
+        if let Some(builtin) = desktop::needs_confirmation(action) {
+            return builtin || spec.is_some_and(|s| s.irreversible);
+        }
+        spec.map_or(self.confirm_unlisted_actions, |s| s.irreversible)
     }
 
     /// The action waiting for confirmation, if any.
@@ -215,7 +221,8 @@ impl SigmaEngine {
         // The agent moved on to another action: an older one awaiting confirmation is dropped,
         // so the user can never release it later, out of the situation it was chosen in.
         self.safety.pending = None;
-        if let Some(reverse) = self.safety.specs.get(&action).and_then(|s| s.reverse.clone()) {
+        let reverse = desktop::reverse_of(&action).or_else(|| self.safety.specs.get(&action)?.reverse.clone());
+        if let Some(reverse) = reverse {
             if self.safety.undo.len() == UNDO_DEPTH {
                 self.safety.undo.remove(0);
             }

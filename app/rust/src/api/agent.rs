@@ -4,9 +4,10 @@
 use anyhow::{anyhow, Context, Result};
 use sigma_core::substate::offered_to_peers;
 use sigma_core::{
-    crypto, language, ActionManifest, ActionSpec, ConfirmationGate, Emotion as CoreEmotion, FactorStore, ImpasseKind,
-    NodeIdentity, PredicateRole, PredicateSchema, SigmaEngine, SkillPackage, QUARANTINE,
+    crypto, desktop, language, ActionManifest, ActionSpec, ConfirmationGate, DesktopAction, Emotion as CoreEmotion,
+    FactorStore, ImpasseKind, NodeIdentity, PredicateRole, PredicateSchema, SigmaEngine, SkillPackage, QUARANTINE,
 };
+use sigma_desktop::{DesktopControl, StopSwitch};
 use sigma_net::{EndpointId, SkillMeshNode};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -22,6 +23,10 @@ struct Agent {
     gate: Mutex<ConfirmationGate>,
     /// Phrases the user taught, this device's and synced ones.
     phrases: Arc<Mutex<language::PhraseBook>>,
+    /// Keyboard, mouse and screen; created when the user first turns one of them on.
+    desktop: Mutex<Option<DesktopControl>>,
+    /// Stops desktop control without waiting for `desktop` (which an action may hold).
+    desktop_stop: Mutex<Option<StopSwitch>>,
 }
 
 static AGENT: OnceLock<Agent> = OnceLock::new();
@@ -144,6 +149,29 @@ pub struct CognitiveStep {
     pub motor_commands: Vec<String>,
     /// Actions `undo_last_action` can reverse, oldest first.
     pub undo_stack: Vec<String>,
+    /// What the keyboard and mouse did this step (desktop actions among `motor_commands`).
+    pub desktop_events: Vec<DesktopEvent>,
+    /// Desktop control after this step (the failsafe may have stopped it).
+    pub desktop: DesktopStatus,
+}
+
+/// One desktop action the actuator performed or refused.
+pub struct DesktopEvent {
+    pub action: String,
+    /// Plain words: what was done, or why not.
+    pub message: String,
+    pub ok: bool,
+}
+
+pub struct DesktopStatus {
+    /// This platform's keyboard and mouse can be controlled at all.
+    pub supported: bool,
+    /// Sigma may use the keyboard and mouse.
+    pub control: bool,
+    /// Sigma looks at the screen before each step.
+    pub perception: bool,
+    /// The focused app at the last look, while perception is on.
+    pub focused_app: Option<String>,
 }
 
 pub struct ConfirmationRequest {
@@ -231,7 +259,9 @@ pub fn init_agent(storage_dir: String, swarm_passphrase: String, bootstrap_peers
         }
     });
     let gate = Mutex::new(ConfirmationGate::new());
-    let agent = AGENT.get_or_init(|| Agent { rt, store, identity, engine, node, gate, phrases });
+    // Desktop control and screen perception are off at every start, whatever they were before.
+    let (desktop, desktop_stop) = (Mutex::new(None), Mutex::new(None));
+    let agent = AGENT.get_or_init(|| Agent { rt, store, identity, engine, node, gate, phrases, desktop, desktop_stop });
     Ok(info(agent, restored.len() as u32))
 }
 
@@ -247,8 +277,25 @@ fn info(a: &Agent, restored_skills: u32) -> AgentInfo {
 /// broadcast to the swarm automatically; downloaded skills appear on later steps.
 pub fn run_cognitive_step(evidence: Vec<Evidence>, active_goals: Vec<String>) -> Result<CognitiveStep> {
     let a = agent()?;
+    // Screen perception (when the user turned it on): binary evidence for this cycle.
+    let mut desktop_events = Vec::new();
+    let seen = match a.desktop.lock().unwrap().as_mut().and_then(DesktopControl::observe) {
+        Some(Ok(o)) => o.evidence,
+        Some(Err(e)) => {
+            desktop_events.push(DesktopEvent { action: "look at the screen".into(), message: e, ok: false });
+            Vec::new()
+        }
+        None => Vec::new(),
+    };
     let out = {
         let mut engine = a.engine.lock().unwrap();
+        for (predicate, value) in seen {
+            let p = PredicateSchema::binary(&predicate, PredicateRole::Context);
+            if engine.register_predicate(&p).is_ok() {
+                let _ = a.store.save_predicate(&p);
+            }
+            engine.set_evidence(&predicate, value).map_err(err)?;
+        }
         for ev in evidence {
             let p = PredicateSchema::binary(&ev.predicate, PredicateRole::Context);
             if engine.register_predicate(&p).is_ok() {
@@ -279,6 +326,8 @@ pub fn run_cognitive_step(evidence: Vec<Evidence>, active_goals: Vec<String>) ->
         (out, confirmation, engine.take_motor_commands(), engine.undo_stack())
     };
     let (out, awaiting_confirmation, motor_commands, undo_stack) = out;
+    // Engine lock released: Stop and other calls stay responsive while the actions run.
+    desktop_events.extend(perform_desktop_actions(a, &motor_commands));
     if let Some(impasse) = out.impasse.clone() {
         let node = a.node.clone();
         a.rt.spawn(async move { node.broadcast_impasse(impasse).await });
@@ -312,7 +361,120 @@ pub fn run_cognitive_step(evidence: Vec<Evidence>, active_goals: Vec<String>) ->
         awaiting_confirmation,
         motor_commands,
         undo_stack,
+        desktop_events,
+        desktop: status(a),
     })
+}
+
+/// Hands the desktop actions among `commands` to the keyboard and mouse, in order. Once one
+/// fails, the rest are not attempted: they were chosen assuming the earlier ones happened.
+fn perform_desktop_actions(a: &Agent, commands: &[String]) -> Vec<DesktopEvent> {
+    let mut events = Vec::new();
+    let mut desktop = a.desktop.lock().unwrap();
+    for action in commands.iter().filter(|c| desktop::is_desktop_action(c)) {
+        let result = match desktop.as_mut() {
+            _ if events.iter().any(|e: &DesktopEvent| !e.ok) => Err("skipped after an earlier failure".to_string()),
+            Some(d) => d.execute(action).expect("a desktop action"),
+            None => Err("desktop control is off".into()),
+        };
+        let (message, ok) = match result {
+            Ok(m) => (m, true),
+            Err(m) => (m, false),
+        };
+        events.push(DesktopEvent { action: action.clone(), message, ok });
+    }
+    events
+}
+
+/// Performs one desktop action released outside a step (confirmed or undone).
+fn perform_released(a: &Agent, action: &str) -> Result<()> {
+    match perform_desktop_actions(a, &[action.to_string()]).pop() {
+        Some(e) if !e.ok => Err(anyhow!("{}: {}", describe_action(e.action), e.message)),
+        _ => Ok(()),
+    }
+}
+
+fn status(a: &Agent) -> DesktopStatus {
+    let desktop = a.desktop.lock().unwrap();
+    DesktopStatus {
+        supported: DesktopControl::supported(),
+        control: desktop.as_ref().is_some_and(DesktopControl::control_enabled),
+        perception: desktop.as_ref().is_some_and(DesktopControl::perception_enabled),
+        focused_app: desktop.as_ref().and_then(DesktopControl::focused_app),
+    }
+}
+
+/// Whether this device's keyboard and mouse can be handed to Sigma at all.
+#[flutter_rust_bridge::frb(sync)]
+pub fn desktop_control_supported() -> bool {
+    DesktopControl::supported()
+}
+
+/// The action in plain words (desktop actions; anything else comes back as it is).
+#[flutter_rust_bridge::frb(sync)]
+pub fn describe_action(action: String) -> String {
+    match DesktopAction::parse(&action) {
+        Some(Ok(d)) => d.describe(),
+        _ => action,
+    }
+}
+
+fn with_desktop(a: &Agent, f: impl FnOnce(&mut DesktopControl)) -> Result<DesktopStatus> {
+    {
+        let mut desktop = a.desktop.lock().unwrap();
+        if desktop.is_none() {
+            let d = DesktopControl::native().map_err(err)?;
+            *a.desktop_stop.lock().unwrap() = Some(d.stop_switch());
+            *desktop = Some(d);
+        }
+        f(desktop.as_mut().expect("just created"));
+    }
+    Ok(status(a))
+}
+
+/// Lets Sigma use the keyboard and mouse, or takes them back. Off at every start. Moving
+/// the pointer and scrolling then run on their own; every click, key press and typed text
+/// still waits for the user's confirmation.
+pub fn set_desktop_control(enabled: bool) -> Result<DesktopStatus> {
+    let a = agent()?;
+    if !enabled {
+        return stop_desktop_control();
+    }
+    with_desktop(a, |d| d.set_control(true))
+}
+
+/// Lets Sigma look at the screen before each step (a small grayscale thumbnail and the
+/// focused app, never stored or sent), or stops it. Off at every start.
+pub fn set_screen_perception(enabled: bool) -> Result<DesktopStatus> {
+    let a = agent()?;
+    if !enabled && a.desktop.lock().unwrap().is_none() {
+        return Ok(status(a));
+    }
+    with_desktop(a, |d| d.set_perception(enabled))
+}
+
+/// Stops desktop control and screen perception at once, and drops a desktop action waiting
+/// for confirmation. Works while an action is running: typing stops within a few characters.
+pub fn stop_desktop_control() -> Result<DesktopStatus> {
+    let a = agent()?;
+    if let Some(switch) = a.desktop_stop.lock().unwrap().as_ref() {
+        switch.stop();
+    }
+    {
+        let mut engine = a.engine.lock().unwrap();
+        if engine.pending_action().is_some_and(|p| desktop::is_desktop_action(&p.action)) {
+            a.gate.lock().unwrap().revoke();
+            engine.cancel_pending_action();
+        }
+    }
+    if let Some(d) = a.desktop.lock().unwrap().as_mut() {
+        d.stop();
+    }
+    Ok(status(a))
+}
+
+pub fn desktop_status() -> Result<DesktopStatus> {
+    Ok(status(agent()?))
 }
 
 /// Releases the action awaiting confirmation. `token` must be the one the last step showed
@@ -322,6 +484,8 @@ pub fn confirm_action(token: String) -> Result<String> {
     let mut engine = a.engine.lock().unwrap();
     let action = a.gate.lock().unwrap().confirm(&mut engine, &token).map_err(err)?;
     engine.take_motor_commands();
+    drop(engine);
+    perform_released(a, &action).map_err(|e| anyhow!("confirmed, but could not {e}"))?;
     Ok(action)
 }
 
@@ -340,6 +504,10 @@ pub fn undo_last_action() -> Result<UndoResult> {
     let undone = engine.undo().map_err(err)?;
     engine.take_motor_commands();
     a.store.save_goal_stack(&engine.goal_stack).map_err(err)?;
+    drop(engine);
+    if let Some(reverse) = &undone.reverse_action {
+        perform_released(a, reverse).map_err(|e| anyhow!("undone, but could not {e}"))?;
+    }
     Ok(UndoResult { action: undone.action, reverse_action: undone.reverse_action })
 }
 

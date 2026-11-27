@@ -193,6 +193,16 @@ Tap the microphone in the app bar (or the mic under the desktop avatar, or **Lis
   * **Uncertain speech is soft evidence.** The recognizer's confidence scales the interpretation's. A spoken observation at confidence 0.7 or above becomes evidence. Below that, it is perceived (`perceive`) as a leaning distribution for one cycle only.
 * **Safety.** Language never selects an action and never names one: `Action` predicates are not targets, even for taught phrases. "Yes, do it" is recognized (`ConfirmRequested`) but carries nothing. Sigma answers by pointing at the **Confirm** button, which alone holds the single-use confirmation token. Cancel and undo by voice do only what their buttons do.
 
+### Let Sigma use the desktop (keyboard, mouse and screen)
+
+The app's **Desktop** section (Windows, macOS and Linux on X11) hands Sigma the keyboard and mouse, and separately lets it look at the screen. Both are off at every start. The `sigma-desktop` crate does the work: [enigo](https://github.com/enigo-rs/enigo) for input, [xcap](https://github.com/nashaofu/xcap) for the screen on Windows and macOS, and plain X11 (`x11rb`) on Linux.
+
+* **Desktop actions are ordinary Sigma actions** in the `desktop.` namespace, so skills select them like any other: `desktop.move(x,y)`, `desktop.click`, `desktop.click(x,y)`, `desktop.double_click(x,y)`, `desktop.right_click(x,y)`, `desktop.drag(x1,y1,x2,y2)`, `desktop.scroll(lines)` (positive scrolls down), `desktop.type(text)` and `desktop.key(ctrl+shift+s)`. Coordinates are screen pixels. Teach one like any skill, with the action predicate named e.g. `desktop.click(640,360)`.
+* **Built-in safety (`sigma_core::desktop`).** Only pointer moves and scrolling run on their own, and both go on the undo stack (undoing a move puts the pointer back, undoing a scroll scrolls back). Every click, drag, key press and typed text waits for **Confirm**, each time. An action manifest can make a desktop action stricter but never relax one. A malformed `desktop.` action also waits, and the actuator refuses it.
+* **Stopping.** The red **Stop** button (app bar, Desktop section, and under the avatar), saying "stop", or pushing the mouse into the top-left corner of the screen turns control and screen perception off at once and drops a desktop action waiting for confirmation. Stop works while an action is running: typing stops within a few characters.
+* **Perception.** Before each step Sigma reduces the primary screen to a 32×18 grayscale thumbnail and checks the focused app. It reports `desktop.screen_changed`, `desktop.user_moved_mouse` and `desktop.app.<name>` (e.g. `desktop.app.notepad`) as evidence. Frames stay in memory, are never stored, synced or sent, and are dropped when perception stops.
+* **Platform notes.** On macOS the app needs Accessibility (input) and Screen Recording permission, and the App Sandbox (on in `app/macos`) blocks synthetic input, so control there needs an unsandboxed build. On Windows, input cannot reach windows running as administrator unless Sigma does too. On Linux, Wayland sessions are not supported (X11 and XWayland apps only).
+
 Transparency needs a compositing window manager on Linux. Without one the companion keeps a black background.
 
 Tests:
@@ -201,6 +211,7 @@ Tests:
 cd app && flutter test                                                # avatar mood, painting and interactions, voice commands
 xvfb-run -a flutter test integration_test/agent_test.dart -d linux    # FFI smoke test (language included)
 xvfb-run -a flutter test integration_test/avatar_test.dart -d linux   # window becomes the companion and back
+xvfb-run -a flutter test integration_test/desktop_test.dart -d linux  # real keyboard, mouse and screen: opt-in, confirm, undo, stop
 ```
 
 ## Conventions

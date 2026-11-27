@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `agent`, `err`, `info`, `provenance`
+// These functions are ignored because they are not marked as `pub`: `agent`, `err`, `info`, `perform_desktop_actions`, `perform_released`, `provenance`, `status`, `with_desktop`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Agent`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`, `from`, `from`, `from`, `try_from`
 
@@ -31,6 +31,33 @@ Future<CognitiveStep> runCognitiveStep({
   evidence: evidence,
   activeGoals: activeGoals,
 );
+
+/// Whether this device's keyboard and mouse can be handed to Sigma at all.
+bool desktopControlSupported() =>
+    RustLib.instance.api.crateApiAgentDesktopControlSupported();
+
+/// The action in plain words (desktop actions; anything else comes back as it is).
+String describeAction({required String action}) =>
+    RustLib.instance.api.crateApiAgentDescribeAction(action: action);
+
+/// Lets Sigma use the keyboard and mouse, or takes them back. Off at every start. Moving
+/// the pointer and scrolling then run on their own; every click, key press and typed text
+/// still waits for the user's confirmation.
+Future<DesktopStatus> setDesktopControl({required bool enabled}) =>
+    RustLib.instance.api.crateApiAgentSetDesktopControl(enabled: enabled);
+
+/// Lets Sigma look at the screen before each step (a small grayscale thumbnail and the
+/// focused app, never stored or sent), or stops it. Off at every start.
+Future<DesktopStatus> setScreenPerception({required bool enabled}) =>
+    RustLib.instance.api.crateApiAgentSetScreenPerception(enabled: enabled);
+
+/// Stops desktop control and screen perception at once, and drops a desktop action waiting
+/// for confirmation. Works while an action is running: typing stops within a few characters.
+Future<DesktopStatus> stopDesktopControl() =>
+    RustLib.instance.api.crateApiAgentStopDesktopControl();
+
+Future<DesktopStatus> desktopStatus() =>
+    RustLib.instance.api.crateApiAgentDesktopStatus();
 
 /// Releases the action awaiting confirmation. `token` must be the one the last step showed
 /// the user; a token works once. Returns the action now sent to the actuator.
@@ -261,6 +288,12 @@ class CognitiveStep {
   /// Actions `undo_last_action` can reverse, oldest first.
   final List<String> undoStack;
 
+  /// What the keyboard and mouse did this step (desktop actions among `motor_commands`).
+  final List<DesktopEvent> desktopEvents;
+
+  /// Desktop control after this step (the failsafe may have stopped it).
+  final DesktopStatus desktop;
+
   const CognitiveStep({
     required this.goalStack,
     this.selectedAction,
@@ -273,6 +306,8 @@ class CognitiveStep {
     this.awaitingConfirmation,
     required this.motorCommands,
     required this.undoStack,
+    required this.desktopEvents,
+    required this.desktop,
   });
 
   @override
@@ -287,7 +322,9 @@ class CognitiveStep {
       attendedSkills.hashCode ^
       awaitingConfirmation.hashCode ^
       motorCommands.hashCode ^
-      undoStack.hashCode;
+      undoStack.hashCode ^
+      desktopEvents.hashCode ^
+      desktop.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -304,7 +341,9 @@ class CognitiveStep {
           attendedSkills == other.attendedSkills &&
           awaitingConfirmation == other.awaitingConfirmation &&
           motorCommands == other.motorCommands &&
-          undoStack == other.undoStack;
+          undoStack == other.undoStack &&
+          desktopEvents == other.desktopEvents &&
+          desktop == other.desktop;
 }
 
 class ConfirmationRequest {
@@ -374,6 +413,71 @@ enum DecisionImpasseKind {
 
   /// The best action is both strongly supported and strongly opposed.
   conflict,
+}
+
+/// One desktop action the actuator performed or refused.
+class DesktopEvent {
+  final String action;
+
+  /// Plain words: what was done, or why not.
+  final String message;
+  final bool ok;
+
+  const DesktopEvent({
+    required this.action,
+    required this.message,
+    required this.ok,
+  });
+
+  @override
+  int get hashCode => action.hashCode ^ message.hashCode ^ ok.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DesktopEvent &&
+          runtimeType == other.runtimeType &&
+          action == other.action &&
+          message == other.message &&
+          ok == other.ok;
+}
+
+class DesktopStatus {
+  /// This platform's keyboard and mouse can be controlled at all.
+  final bool supported;
+
+  /// Sigma may use the keyboard and mouse.
+  final bool control;
+
+  /// Sigma looks at the screen before each step.
+  final bool perception;
+
+  /// The focused app at the last look, while perception is on.
+  final String? focusedApp;
+
+  const DesktopStatus({
+    required this.supported,
+    required this.control,
+    required this.perception,
+    this.focusedApp,
+  });
+
+  @override
+  int get hashCode =>
+      supported.hashCode ^
+      control.hashCode ^
+      perception.hashCode ^
+      focusedApp.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DesktopStatus &&
+          runtimeType == other.runtimeType &&
+          supported == other.supported &&
+          control == other.control &&
+          perception == other.perception &&
+          focusedApp == other.focusedApp;
 }
 
 /// How the agent felt about its last cycle; drives the desktop avatar.
