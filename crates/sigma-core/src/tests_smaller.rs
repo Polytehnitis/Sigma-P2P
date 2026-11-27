@@ -206,6 +206,100 @@ fn max_product_finds_peaks_inside_slices() {
     assert!((out.eval(&[0.3]) - 1.3).abs() < 1e-6);
 }
 
+/// The maximum over x of `f(x, y, z)·m(x)` by dense search over x.
+fn brute_max(f: &Plm, d: usize, m: &Plm, yz: [f64; 2]) -> f64 {
+    let (lo, hi) = (f.bounds[d][0], f.bounds[d][f.bounds[d].len() - 1]);
+    let steps = 4_000;
+    let ends = f.bounds[d].windows(2).flat_map(|w| [w[0], w[1] - (w[1] - w[0]) * 1e-9]);
+    (0..steps)
+        .map(|i| lo + (hi - lo) * (i as f64 + 0.5) / steps as f64)
+        .chain(ends)
+        .map(|x| {
+            let mut at = yz.to_vec();
+            at.insert(d, x);
+            f.eval(&at) * m.eval(&[x])
+        })
+        .fold(f64::NEG_INFINITY, f64::max)
+}
+
+fn random_plm3(rng: &mut rand::rngs::StdRng) -> Plm {
+    use rand::Rng;
+    let bounds = vec![vec![0.0, 0.3, 0.7, 1.0], vec![0.0, 0.5, 1.0], vec![0.0, 0.4, 1.0]];
+    let regions = 3 * 2 * 2;
+    let coef = (0..regions * 4).map(|_| rng.gen_range(-1.0..1.0)).collect();
+    Plm { bounds, coef }
+}
+
+#[test]
+fn max_product_with_two_dimensions_left_converges_at_slice_ends() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(11);
+    // A flat message: every peak lies at a slice end, so the maximum is a maximum of planes
+    // whose kinks need not follow the axes.
+    let flat = Plm::constant(vec![vec![0.0, 1.0]], 1.0);
+    for trial in 0..8 {
+        let f = random_plm3(&mut rng);
+        for d in 0..3 {
+            let out = f.mul_max_out(d, &flat);
+            assert_eq!(out.dims(), 2);
+            assert!(out.regions() <= crate::plm::MAX_REFINED_REGIONS);
+            for i in 0..9 {
+                for j in 0..9 {
+                    let yz = [0.05 + 0.11 * i as f64, 0.05 + 0.11 * j as f64];
+                    let want = brute_max(&f, d, &flat, yz);
+                    let got = out.eval(&yz);
+                    assert!(got <= want + 1e-9, "tangent planes never exceed the maximum");
+                    assert!(want - got < 2e-3, "trial {trial} d {d} at {yz:?}: {got} vs {want}");
+                }
+            }
+        }
+    }
+    // Kinks along an axis are matched exactly: f = |y - 0.3| + z as the max of two planes.
+    let f = Plm {
+        bounds: vec![vec![0.0, 0.5, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]],
+        coef: vec![0.3, 0.0, -1.0, 1.0, -0.3, 0.0, 1.0, 1.0],
+    };
+    let out = f.mul_max_out(0, &flat);
+    for (y, z) in [(0.1, 0.2), (0.3, 0.9), (0.31, 0.0), (0.8, 0.5)] {
+        let want = (y - 0.3f64).abs() + z;
+        assert!((out.eval(&[y, z]) - want).abs() < 1e-9, "({y}, {z}): {}", out.eval(&[y, z]));
+    }
+}
+
+#[test]
+fn max_product_with_two_dimensions_left_finds_interior_peaks() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(5);
+    // A sloped message makes products peak inside slices, at points that move with y and z.
+    let m = Plm { bounds: vec![vec![0.0, 0.5, 1.0]], coef: vec![1.0, -1.5, 0.5, -0.4] };
+    for trial in 0..8 {
+        let f = random_plm3(&mut rng);
+        for d in 0..3 {
+            let out = f.mul_max_out(d, &m);
+            let mut scale = 0.0f64;
+            let mut worst = 0.0f64;
+            for i in 0..9 {
+                for j in 0..9 {
+                    let yz = [0.05 + 0.11 * i as f64, 0.05 + 0.11 * j as f64];
+                    let want = brute_max(&f, d, &m, yz);
+                    scale = scale.max(want.abs());
+                    worst = worst.max((out.eval(&yz) - want).abs());
+                }
+            }
+            assert!(worst <= 2e-3 * scale.max(1e-3), "trial {trial} d {d}: off by {worst} of {scale}");
+        }
+    }
+    // The example peak: f = x + y + z with m = 1 - x peaks at ((1 + y + z) / 2)² while y + z < 1.
+    let f = Plm { bounds: vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]], coef: vec![0.0, 1.0, 1.0, 1.0] };
+    let m = Plm { bounds: vec![vec![0.0, 1.0]], coef: vec![1.0, -1.0] };
+    let out = f.mul_max_out(0, &m);
+    for (y, z) in [(0.1, 0.2), (0.3, 0.3), (0.0, 0.0), (0.45, 0.5)] {
+        let want = ((1.0f64 + y + z) / 2.0).powi(2);
+        let got = out.eval(&[y, z]);
+        assert!(got <= want + 1e-12 && want - got <= 5e-4 * want, "({y}, {z}): {got} vs {want}");
+    }
+}
+
 #[test]
 fn categories_are_discovered_without_labels() {
     let mut engine = SigmaEngine::new();
