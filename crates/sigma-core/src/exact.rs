@@ -178,7 +178,8 @@ impl SigmaEngine {
         let continuous: Vec<Option<(f64, f64)>> =
             f.vars.iter().map(|&v| self.vars[v].range.map(|(lo, hi)| (lo as f64, hi as f64))).collect();
         let exact = match &a.function {
-            Function::Table(_) => return Some(live.simplified()),
+            // Mapped forms are resolved at grounding; a table has no exact form.
+            Function::Table(_) | Function::Mapped { .. } => return Some(live.simplified()),
             Function::PiecewiseLinear { default, pieces } => {
                 let k = a.prefix.len();
                 let bounds: Vec<Vec<f64>> = (0..f.vars.len())

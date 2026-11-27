@@ -66,6 +66,19 @@ pub enum Function {
     /// (`mean[0] + Σ mean[i+1] · x_i`, the target's own coefficient ignored), times the
     /// region width: a continuous distribution in the style of PySigma.
     Gaussian { target: usize, mean: Vec<f32>, std: f32 },
+    /// An analytic form read through an affine map of its continuous coordinates: dimension
+    /// `i` with `maps[i] = Some(m)` takes the value `x_i = m.coef · u_i + m.offset` where the
+    /// inner `function` saw `u_i` (so a piece over `[lo, hi)` covers the mapped interval, and
+    /// a Gaussian becomes the density of the mapped value). Lets one function be reused in
+    /// other units, mirrored or shifted, as an affine pattern does for symbols.
+    Mapped { maps: Vec<Option<ValueMap>>, function: Box<Function> },
+}
+
+/// `x = coef · u + offset`, for one dimension of a [`Function::Mapped`].
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ValueMap {
+    pub coef: f32,
+    pub offset: f32,
 }
 
 /// An axis-aligned box `[lo_i, hi_i)` per dimension with an affine function on it.
@@ -80,10 +93,69 @@ pub struct Piece {
 pub const MAX_PIECES: usize = 1024;
 
 impl Function {
+    /// `function` with dimension `dim` (of `n`) read through `x = coef · u + offset`.
+    pub fn mapped(function: Function, n: usize, dim: usize, coef: f32, offset: f32) -> Function {
+        let mut maps = vec![None; n];
+        if dim < n {
+            maps[dim] = Some(ValueMap { coef, offset });
+        }
+        Function::Mapped { maps, function: Box::new(function) }
+    }
+
+    /// The same function without any [`Function::Mapped`] layer: the map is folded into the
+    /// pieces' boxes and coefficients, or into the Gaussian's mean and spread, exactly.
+    pub fn resolved(&self) -> Result<Function, &'static str> {
+        let Function::Mapped { maps, function } = self else { return Ok(self.clone()) };
+        let n = maps.len();
+        if maps.iter().flatten().any(|m| !(m.coef.is_finite() && m.coef != 0.0 && m.offset.is_finite())) {
+            return Err("invalid value map");
+        }
+        // u_i = (x_i - offset_i) / coef_i = a_i · x_i + b_i
+        let a: Vec<f32> = maps.iter().map(|m| m.map_or(1.0, |m| 1.0 / m.coef)).collect();
+        let b: Vec<f32> = maps.iter().map(|m| m.map_or(0.0, |m| -m.offset / m.coef)).collect();
+        let x_of = |i: usize, u: f32| maps[i].map_or(u, |m| m.coef * u + m.offset);
+        let out = match function.as_ref() {
+            Function::Table(_) => return Err("a mapped function must be analytic"),
+            Function::Mapped { .. } => return Err("nested value maps"),
+            Function::PiecewiseLinear { default, pieces } => {
+                function.check(n)?;
+                let pieces = pieces
+                    .iter()
+                    .map(|p| {
+                        let (mut lo, mut hi) = (Vec::with_capacity(n), Vec::with_capacity(n));
+                        for i in 0..n {
+                            let (l, h) = (x_of(i, p.lo[i]), x_of(i, p.hi[i]));
+                            lo.push(l.min(h));
+                            hi.push(l.max(h));
+                        }
+                        let mut coef = vec![p.coef[0] + (0..n).map(|i| p.coef[i + 1] * b[i]).sum::<f32>()];
+                        coef.extend((0..n).map(|i| p.coef[i + 1] * a[i]));
+                        Piece { lo, hi, coef }
+                    })
+                    .collect();
+                Function::PiecewiseLinear { default: *default, pieces }
+            }
+            Function::Gaussian { target, mean, std } => {
+                function.check(n)?;
+                let t = *target;
+                // mean in u: m0 + Σ m_i (a_i x_i + b_i); x_t = (u_t - b_t) / a_t.
+                let (at, bt) = (a[t], b[t]);
+                let mut m =
+                    vec![(mean[0] + (0..n).filter(|&i| i != t).map(|i| mean[i + 1] * b[i]).sum::<f32>() - bt) / at];
+                m.extend((0..n).map(|i| if i == t { 0.0 } else { mean[i + 1] * a[i] / at }));
+                Function::Gaussian { target: t, mean: m, std: std / at.abs() }
+            }
+        };
+        out.check(n)?;
+        Ok(out)
+    }
+
     /// Shape checks for the analytic forms over `n` dimensions.
     fn check(&self, n: usize) -> Result<(), &'static str> {
         match self {
             Function::Table(_) => Ok(()),
+            Function::Mapped { maps, .. } if maps.len() != n => Err("value maps do not match the patterns"),
+            Function::Mapped { .. } => self.resolved().map(|_| ()),
             Function::PiecewiseLinear { pieces, .. } => {
                 if pieces.len() > MAX_PIECES
                     || pieces.iter().any(|p| p.lo.len() != n || p.hi.len() != n || p.coef.len() != n + 1)
@@ -106,6 +178,7 @@ impl Function {
     pub fn eval(&self, x: &[f32], widths: &[f32]) -> f32 {
         match self {
             Function::Table(_) => 0.0,
+            Function::Mapped { .. } => self.resolved().map_or(0.0, |f| f.eval(x, widths)),
             Function::PiecewiseLinear { default, pieces } => {
                 let inside = |p: &&Piece| x.iter().zip(p.lo.iter().zip(&p.hi)).all(|(v, (l, h))| l <= v && v < h);
                 pieces
@@ -138,10 +211,11 @@ impl Function {
             Function::Table(_) => return Err("function length does not match conditional"),
             _ => {
                 self.check(n)?;
+                let resolved = self.resolved()?;
                 let mut out = Vec::with_capacity(len);
                 for_each_assignment(&axes.iter().map(|a| a.len()).collect::<Vec<_>>(), |idx| {
                     let x: Vec<f32> = idx.iter().zip(axes).map(|(&i, a)| a[i]).collect();
-                    out.push(self.eval(&x, widths));
+                    out.push(resolved.eval(&x, widths));
                 });
                 out
             }
@@ -517,7 +591,8 @@ impl Program {
                     // every pattern).
                     analytic: (!padded && !matches!(c.function, Function::Table(_))).then(|| {
                         Arc::new(Analytic {
-                            function: c.function.clone(),
+                            // Folded once here, so exact and particle inference see plain forms.
+                            function: c.function.resolved().unwrap_or_else(|_| c.function.clone()),
                             prefix: fv.iter().map(|&i| a[i] as f32).collect(),
                         })
                     }),
