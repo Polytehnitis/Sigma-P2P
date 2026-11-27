@@ -10,10 +10,19 @@
 //!   scores the arc `j -> i` (by the two tags, its direction and its length) when `Head(i) = j`
 //!   and is neutral otherwise, plus a root factor on `Head(i), Tag(i)`.
 //!
-//! Max-product message passing ([`SigmaEngine::map_estimate`]) decodes the most probable tags
-//! and heads together: an arc-factored dependency parse, solved by loopy max-product rather
-//! than a chart. The single root is enforced when decoding. A [`Grammar`] holds the counts
-//! behind the factors and learns from parses it is shown ([`Grammar::learn`]).
+//! [`Grammar::parse_in_graph`] builds that graph and decodes it with the engine's max-product
+//! message passing ([`SigmaEngine::map_estimate`]); on a graph this loopy that is approximate,
+//! and the graph grows with the square of the sentence, so it takes at most 12 words.
+//!
+//! [`Grammar::parse`] finds the exact maximum of the same model over projective trees with a
+//! single root: Eisner's chart algorithm, with each chart item also carrying the tags of its
+//! two end words. Every pair of neighbouring words meets exactly once where two spans join,
+//! which is where the tag transition between them is scored, so tags and arcs are decoded
+//! jointly and exactly in O(n³·T³). It takes sentences of up to [`MAX_PARSE_WORDS`] words.
+//! [`Grammar::log_score`] scores any parse under the model, so the two can be compared.
+//!
+//! A [`Grammar`] holds the counts behind the factors and learns from parses it is shown
+//! ([`Grammar::learn`]).
 //!
 //! [`crate::language::interpret`] uses the parse to find the core of a command (the root and
 //! its content dependents), so "could you please go ahead and mount my nas for me" is
@@ -37,8 +46,10 @@ const PREP: usize = 6;
 const ADV: usize = 7;
 /// The root, as a head "tag".
 const ROOT: usize = T;
-/// Longest sentence parsed (words).
-pub const MAX_PARSE_WORDS: usize = 12;
+/// Longest sentence parsed exactly (words).
+pub const MAX_PARSE_WORDS: usize = 48;
+/// Longest sentence parsed in the factor graph (words).
+pub const MAX_GRAPH_PARSE_WORDS: usize = 12;
 /// Arc length penalty per extra word of distance.
 const DISTANCE: f32 = 0.35;
 
@@ -255,10 +266,50 @@ impl Grammar {
         self.parse(&words)
     }
 
-    /// Builds the sentence's factor graph and decodes it by max-product message passing.
+    /// The model's log score of a parse: emissions, tag transitions, arcs (with their length
+    /// penalty) and the root arc. `None` if the parse is not a tree with one root.
+    pub fn log_score(&self, parse: &Parse) -> Option<f32> {
+        let n = parse.words.len();
+        if n == 0
+            || parse.tags.len() != n
+            || parse.heads.len() != n
+            || parse.heads.iter().filter(|h| h.is_none()).count() != 1
+        {
+            return None;
+        }
+        let mut score = 0.0;
+        for i in 0..n {
+            let t = *parse.tags.get(i).filter(|&&t| t < T)?;
+            score += self.emission(&parse.words[i])[t].ln();
+            let from = if i == 0 { T } else { parse.tags[i - 1] };
+            score += self.transition(from)[t].ln();
+            score += match parse.heads[i] {
+                None => self.attachment(t, ROOT, false).ln(),
+                Some(h) if h < n && h != i => {
+                    let length = (i as f32 - h as f32).abs() - 1.0;
+                    self.attachment(t, parse.tags[h], h > i).ln() - DISTANCE * length
+                }
+                Some(_) => return None,
+            };
+        }
+        Some(score)
+    }
+
+    /// The exact best parse: Eisner's algorithm over (span, direction, end tags). Projective
+    /// trees with a single root.
     pub fn parse(&self, words: &[String]) -> Option<Parse> {
         let n = words.len();
         if n == 0 || n > MAX_PARSE_WORDS {
+            return None;
+        }
+        Some(Chart::new(self, words).decode())
+    }
+
+    /// Builds the sentence's factor graph and decodes it by the engine's loopy max-product
+    /// message passing (approximate; at most [`MAX_GRAPH_PARSE_WORDS`] words).
+    pub fn parse_in_graph(&self, words: &[String]) -> Option<Parse> {
+        let n = words.len();
+        if n == 0 || n > MAX_GRAPH_PARSE_WORDS {
             return None;
         }
         let mut engine = SigmaEngine::new();
@@ -358,6 +409,226 @@ impl Grammar {
             };
             self.attachments[parse.tags[i]][head][usize::from(right)] += 1.0;
         }
+    }
+}
+
+/// Eisner's chart, with the tags of each span's two end words.
+///
+/// `complete[d]` and `incomplete[d]` are indexed by `(i, j, tag of i, tag of j)` for spans
+/// `i <= j`; direction `d = 1` has its head at `i`, `d = 0` at `j`. An incomplete span holds
+/// the arc between `i` and `j`; a complete one is a head with all its dependents on that side.
+struct Chart<'a> {
+    grammar: &'a Grammar,
+    words: &'a [String],
+    n: usize,
+    emission: Vec<[f32; T]>,
+    transition: [[f32; T]; T + 1],
+    complete: [Vec<f32>; 2],
+    incomplete: [Vec<f32>; 2],
+    /// Where each incomplete span was split: `(r, tag of r, tag of r + 1)`.
+    split: Vec<(usize, usize, usize)>,
+    /// Where each complete span was split: `(r, tag of r)`.
+    joined: [Vec<(usize, usize)>; 2],
+}
+
+impl<'a> Chart<'a> {
+    fn new(grammar: &'a Grammar, words: &'a [String]) -> Self {
+        let n = words.len();
+        let size = n * n * T * T;
+        let emission: Vec<[f32; T]> = words.iter().map(|w| grammar.emission(w).map(f32::ln)).collect();
+        let mut transition = [[0.0; T]; T + 1];
+        for (from, row) in transition.iter_mut().enumerate() {
+            *row = grammar.transition(from).map(f32::ln);
+        }
+        let mut chart = Chart {
+            grammar,
+            words,
+            n,
+            emission,
+            transition,
+            complete: [vec![f32::NEG_INFINITY; size], vec![f32::NEG_INFINITY; size]],
+            incomplete: [vec![f32::NEG_INFINITY; size], vec![f32::NEG_INFINITY; size]],
+            split: vec![(0, 0, 0); size],
+            joined: [vec![(0, 0); size], vec![(0, 0); size]],
+        };
+        chart.fill();
+        chart
+    }
+
+    fn at(&self, i: usize, j: usize, ti: usize, tj: usize) -> usize {
+        ((i * self.n + j) * T + ti) * T + tj
+    }
+
+    fn arc(&self, dep: usize, head: usize, head_right: bool, length: usize) -> f32 {
+        self.grammar.attachment(dep, head, head_right).ln() - DISTANCE * (length as f32 - 1.0)
+    }
+
+    fn fill(&mut self) {
+        let n = self.n;
+        for i in 0..n {
+            for t in 0..T {
+                // Every word is the bottom of exactly one left and one right complete span, so
+                // its emission is scored on the left one only.
+                let k = self.at(i, i, t, t);
+                self.complete[0][k] = self.emission[i][t];
+                self.complete[1][k] = 0.0;
+            }
+        }
+        for len in 1..n {
+            for i in 0..n - len {
+                let j = i + len;
+                // Incomplete spans: C→[i, r] and C←[r + 1, j] joined over the neighbours r, r + 1.
+                let mut best = vec![(f32::NEG_INFINITY, (0usize, 0usize, 0usize)); T * T];
+                for r in i..j {
+                    for ti in 0..T {
+                        // Over the tag of r, for each tag of r + 1.
+                        let mut through = [(f32::NEG_INFINITY, 0usize); T];
+                        for tr in 0..T {
+                            let left = self.complete[1][self.at(i, r, ti, tr)];
+                            if left == f32::NEG_INFINITY {
+                                continue;
+                            }
+                            for (tr1, slot) in through.iter_mut().enumerate() {
+                                let v = left + self.transition[tr][tr1];
+                                if v > slot.0 {
+                                    *slot = (v, tr);
+                                }
+                            }
+                        }
+                        for tj in 0..T {
+                            for (tr1, &(v, tr)) in through.iter().enumerate() {
+                                let right = self.complete[0][self.at(r + 1, j, tr1, tj)];
+                                let total = v + right;
+                                if total > best[ti * T + tj].0 {
+                                    best[ti * T + tj] = (total, (r, tr, tr1));
+                                }
+                            }
+                        }
+                    }
+                }
+                for ti in 0..T {
+                    for tj in 0..T {
+                        let (v, at) = best[ti * T + tj];
+                        let k = self.at(i, j, ti, tj);
+                        self.split[k] = at;
+                        // Head i, dependent j (the head is to the dependent's left) ...
+                        self.incomplete[1][k] = v + self.arc(tj, ti, false, len);
+                        // ... or head j, dependent i.
+                        self.incomplete[0][k] = v + self.arc(ti, tj, true, len);
+                    }
+                }
+                // Complete spans.
+                for ti in 0..T {
+                    for tj in 0..T {
+                        let k = self.at(i, j, ti, tj);
+                        // Head i: I→[i, r] then C→[r, j].
+                        let mut right = (f32::NEG_INFINITY, (0, 0));
+                        for r in i + 1..=j {
+                            for tr in 0..T {
+                                let v =
+                                    self.incomplete[1][self.at(i, r, ti, tr)] + self.complete[1][self.at(r, j, tr, tj)];
+                                if v > right.0 {
+                                    right = (v, (r, tr));
+                                }
+                            }
+                        }
+                        self.complete[1][k] = right.0;
+                        self.joined[1][k] = right.1;
+                        // Head j: C←[i, r] then I←[r, j].
+                        let mut left = (f32::NEG_INFINITY, (0, 0));
+                        for r in i..j {
+                            for tr in 0..T {
+                                let v =
+                                    self.complete[0][self.at(i, r, ti, tr)] + self.incomplete[0][self.at(r, j, tr, tj)];
+                                if v > left.0 {
+                                    left = (v, (r, tr));
+                                }
+                            }
+                        }
+                        self.complete[0][k] = left.0;
+                        self.joined[0][k] = left.1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The best single-root tree: the root word `r` heads C←[0, r] and C→[r, n - 1].
+    fn decode(&self) -> Parse {
+        let n = self.n;
+        let mut best = (f32::NEG_INFINITY, (0, 0, 0, 0));
+        for r in 0..n {
+            for tr in 0..T {
+                let root = self.grammar.attachment(tr, ROOT, false).ln();
+                for t0 in 0..T {
+                    let left = self.transition[T][t0] + self.complete[0][self.at(0, r, t0, tr)];
+                    if left == f32::NEG_INFINITY {
+                        continue;
+                    }
+                    for tn in 0..T {
+                        let v = left + root + self.complete[1][self.at(r, n - 1, tr, tn)];
+                        if v > best.0 {
+                            best = (v, (r, tr, t0, tn));
+                        }
+                    }
+                }
+            }
+        }
+        let (r, tr, t0, tn) = best.1;
+        let mut tags = vec![0; n];
+        let mut heads = vec![None; n];
+        self.complete_span(0, r, 0, t0, tr, &mut tags, &mut heads);
+        self.complete_span(r, n - 1, 1, tr, tn, &mut tags, &mut heads);
+        Parse { words: self.words.to_vec(), tags, heads }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn complete_span(
+        &self,
+        i: usize,
+        j: usize,
+        d: usize,
+        ti: usize,
+        tj: usize,
+        tags: &mut [usize],
+        heads: &mut [Option<usize>],
+    ) {
+        tags[i] = ti;
+        tags[j] = tj;
+        if i == j {
+            return;
+        }
+        let (r, tr) = self.joined[d][self.at(i, j, ti, tj)];
+        if d == 1 {
+            self.incomplete_span(i, r, 1, ti, tr, tags, heads);
+            self.complete_span(r, j, 1, tr, tj, tags, heads);
+        } else {
+            self.complete_span(i, r, 0, ti, tr, tags, heads);
+            self.incomplete_span(r, j, 0, tr, tj, tags, heads);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn incomplete_span(
+        &self,
+        i: usize,
+        j: usize,
+        d: usize,
+        ti: usize,
+        tj: usize,
+        tags: &mut [usize],
+        heads: &mut [Option<usize>],
+    ) {
+        tags[i] = ti;
+        tags[j] = tj;
+        if d == 1 {
+            heads[j] = Some(i);
+        } else {
+            heads[i] = Some(j);
+        }
+        let (r, tr, tr1) = self.split[self.at(i, j, ti, tj)];
+        self.complete_span(i, r, 1, ti, tr, tags, heads);
+        self.complete_span(r + 1, j, 0, tr1, tj, tags, heads);
     }
 }
 

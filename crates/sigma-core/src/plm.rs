@@ -170,15 +170,29 @@ impl Plm {
         out
     }
 
-    /// Multiplies by `m(x_d)` and maximizes dimension `d` out (max-product). The maximum of
-    /// each linear piece over its slice lies at an end of the slice, so every slice gives two
-    /// candidate linear functions of the remaining dimensions. When one dimension remains (every
-    /// message, and every two-slot factor), the result is their exact upper envelope: each
-    /// region is split where candidates cross, and each part keeps the candidate that is
-    /// largest there. With more dimensions left, the candidate largest at the region's centre
-    /// is kept. (Within a slice, the product with a sloped message is quadratic; its maximum is
-    /// still taken at the slice's ends.)
+    /// Multiplies by `m(x_d)` and maximizes dimension `d` out (max-product).
+    ///
+    /// Within a slice the product of a piece `c0 + c_d·x + c_y·y` with the message
+    /// `α + β·x` is quadratic in `x`. Where `c_d·β ≥ 0` its maximum over the slice is at an end,
+    /// so the slice gives two candidate linear functions of the remaining dimensions; where
+    /// `c_d·β < 0` it may peak inside the slice, at a point that moves with `y`.
+    ///
+    /// When one dimension remains (every message, and every two-slot factor):
+    /// * a region whose slices all peak at their ends gets the exact upper envelope of its
+    ///   candidates: it is split where candidates cross, and each part keeps the candidate that
+    ///   is largest there;
+    /// * a region with an interior peak gets the exact maximum (ends and clipped interior
+    ///   stationary point of every slice) evaluated at knots placed by bisection until the
+    ///   chord between knots is within [`MAX_PRODUCT_TOLERANCE`] (relative) of it. The maximum
+    ///   of quadratics over `x` is convex in `y`, so the chords lie on or just above it.
+    ///
+    /// With more dimensions left, the candidate largest at the region's centre is kept.
     pub fn mul_max_out(&self, d: usize, m: &Plm) -> Plm {
+        if self.dims() == 2 {
+            if let Some(out) = self.mul_max_out_quadratic(d, m) {
+                return out;
+            }
+        }
         let mut p = self.clone();
         p.bounds[d] = merge_bounds(&self.bounds[d], &m.bounds[0]);
         let p = self.refine(d, &p.bounds[d]);
@@ -254,6 +268,85 @@ impl Plm {
             }
         });
         out
+    }
+
+    /// [`Plm::mul_max_out`] for two dimensions when some slice's product with the message peaks
+    /// inside the slice. `None` when none can (the end-point envelope is then exact).
+    fn mul_max_out_quadratic(&self, d: usize, m: &Plm) -> Option<Plm> {
+        let p = self.refine(d, &merge_bounds(&self.bounds[d], &m.bounds[0]));
+        let y_dim = 1 - d;
+        let shape = p.shape();
+        // Per slice of x: (a, b, α, β), the message being α + β·x there.
+        let slices: Vec<(f64, f64, f64, f64)> = (0..shape[d])
+            .map(|k| {
+                let (a, b) = (p.bounds[d][k], p.bounds[d][k + 1]);
+                let (xa, xb) = (a + (b - a) * 0.25, a + (b - a) * 0.75);
+                let (ma, mb) = (m.eval(&[xa]), m.eval(&[xb]));
+                let beta = (mb - ma) / (xb - xa);
+                (a, b, ma - beta * xa, beta)
+            })
+            .collect();
+        // The piece of region (x slice k, y slice r): (c0, c_x, c_y) in absolute coordinates.
+        let piece = |k: usize, r: usize| {
+            let idx = if d == 0 { [k, r] } else { [r, k] };
+            let c = p.region(flat(&idx, &shape));
+            (c[0], c[d + 1], c[y_dim + 1])
+        };
+        let interior = (0..shape[d]).any(|k| {
+            (0..shape[y_dim]).any(|r| {
+                let (_, cx, _) = piece(k, r);
+                cx * slices[k].3 < -1e-12
+            })
+        });
+        if !interior {
+            return None;
+        }
+        // The exact maximum over x at y, in y slice r.
+        let best = |r: usize, y: f64| -> f64 {
+            let mut top = f64::NEG_INFINITY;
+            for (k, &(a, b, alpha, beta)) in slices.iter().enumerate() {
+                let (c0, cx, cy) = piece(k, r);
+                let base = c0 + cy * y;
+                let g = |x: f64| (base + cx * x) * (alpha + beta * x);
+                let b_in = b - (b - a) * 1e-9;
+                top = top.max(g(a)).max(g(b_in));
+                let curvature = cx * beta;
+                if curvature < -1e-12 {
+                    let x = (-(cx * alpha + beta * base) / (2.0 * curvature)).clamp(a, b_in);
+                    top = top.max(g(x));
+                }
+            }
+            top
+        };
+        let ys = &p.bounds[y_dim];
+        // Linear pieces `(start, c0, c1)` of the result, region by region.
+        let mut pieces: Vec<(f64, f64, f64)> = Vec::new();
+        for r in 0..ys.len() - 1 {
+            let (lo, hi) = (ys[r], ys[r + 1] - (ys[r + 1] - ys[r]) * 1e-9);
+            let mut stack = vec![(lo, best(r, lo), hi, best(r, hi), 0usize)];
+            while let Some((a, fa, b, fb, depth)) = stack.pop() {
+                let mid = 0.5 * (a + b);
+                let fm = best(r, mid);
+                let chord = 0.5 * (fa + fb);
+                let scale = fa.abs().max(fb.abs()).max(fm.abs()).max(1e-300);
+                if depth >= MAX_BISECTIONS || (chord - fm).abs() <= MAX_PRODUCT_TOLERANCE * scale {
+                    let slope = (fb - fa) / (b - a);
+                    pieces.push((a, fa - slope * a, slope));
+                    continue;
+                }
+                // Right half first on the stack, so pieces come out in order.
+                stack.push((mid, fm, b, fb, depth + 1));
+                stack.push((a, fa, mid, fm, depth + 1));
+            }
+        }
+        let mut cuts: Vec<f64> = pieces.iter().map(|q| q.0).collect();
+        cuts.push(ys[ys.len() - 1]);
+        let mut out = Plm::constant(vec![cuts], 0.0);
+        for (k, &(_, c0, c1)) in pieces.iter().enumerate() {
+            out.coef[k * 2] = c0;
+            out.coef[k * 2 + 1] = c1;
+        }
+        Some(out)
     }
 
     /// The same function over the slices `bounds` of dimension `d`, each inside one old slice
@@ -505,6 +598,11 @@ impl Plm {
         self.refine(d, &b)
     }
 }
+
+/// Relative accuracy of a max-product message where a slice's product peaks inside it.
+pub const MAX_PRODUCT_TOLERANCE: f64 = 1e-6;
+/// Deepest bisection when placing those knots.
+const MAX_BISECTIONS: usize = 24;
 
 /// The sorted union of two boundary lists (boundaries closer than `1e-12` are merged).
 pub fn merge_bounds(a: &[f64], b: &[f64]) -> Vec<f64> {
