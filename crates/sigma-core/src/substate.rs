@@ -85,6 +85,8 @@ pub(crate) struct Decision {
     pub impasse: Option<(ImpasseKind, Vec<usize>, bool)>,
     /// The substate that worked on this cycle's impasse, if any.
     pub substate: Option<Substate>,
+    /// The operator distribution the choice was made from.
+    pub operators: Vec<(usize, f32)>,
 }
 
 /// Imagined decisions left this cycle, and the deepest substate reached.
@@ -156,39 +158,45 @@ impl SigmaEngine {
     /// in a substate. `repeats` tells whether selecting an action would repeat the last
     /// decision with nothing changed (a no-change impasse).
     pub(crate) fn decide(&mut self, e: &Elaboration, repeats: impl Fn(usize) -> bool) -> Decision {
-        let tied: Vec<usize> = e.ranked.iter().take_while(|c| e.ranked[0].1 - c.1 < TIE_MARGIN).map(|c| c.0).collect();
-        let others: Vec<usize> = e.ranked.iter().map(|c| c.0).collect();
-        let (kind, candidates, stuck) = match tied.len() {
-            0 => {
-                // None impasse: a rewarded action from a similar episode settles it at once.
-                if let Some(a) = self.recall_action() {
-                    self.substates.clear();
-                    return Decision {
-                        selected: Some(a),
-                        impasse: Some((ImpasseKind::None, vec![a], true)),
-                        substate: None,
-                    };
-                }
-                // Otherwise reason about every action connected to the goal.
-                // Otherwise reason about every action connected to the goal, by a skill or by a
-                // learned action model that predicts an effect on an open (sub)goal.
-                let (_, reach) = self.reachable(e.top);
-                let mut actions: Vec<usize> =
-                    reach.into_iter().filter(|&v| self.vars[v].schema.role == PredicateRole::Action).collect();
-                for a in self.modeled_means() {
-                    if !actions.contains(&a) {
-                        actions.push(a);
-                    }
-                }
-                (ImpasseKind::None, actions, None)
-            }
-            1 if self.conflicted(tied[0], e) => (ImpasseKind::Conflict, others, None),
-            1 if repeats(tied[0]) => (ImpasseKind::NoChange, others, Some(tied[0])),
-            1 => {
+        // Preferences shape the candidates; the operator distribution is what is left.
+        let preferred = self.apply_preferences(&e.ranked);
+        let operators = self.operator_distribution(&preferred.ranked);
+        let others: Vec<usize> = preferred.ranked.iter().map(|c| c.0).collect();
+        let (kind, candidates, stuck) = if preferred.ranked.is_empty() {
+            // None impasse: a rewarded action from a similar episode settles it at once.
+            if let Some(a) = self.recall_action().filter(|&a| !self.apply_preferences(&[(a, 1.0)]).ranked.is_empty()) {
                 self.substates.clear();
-                return Decision { selected: Some(tied[0]), impasse: None, substate: None };
+                return Decision {
+                    selected: Some(a),
+                    impasse: Some((ImpasseKind::None, vec![a], true)),
+                    substate: None,
+                    operators: vec![(a, 1.0)],
+                };
             }
-            _ => (ImpasseKind::Tie, tied, None),
+            // Otherwise reason about every action connected to the goal, by a skill or by a
+            // learned action model that predicts an effect on an open (sub)goal (and that no
+            // preference rules out).
+            let (_, reach) = self.reachable(e.top);
+            let mut actions: Vec<usize> =
+                reach.into_iter().filter(|&v| self.vars[v].schema.role == PredicateRole::Action).collect();
+            for a in self.modeled_means() {
+                if !actions.contains(&a) {
+                    actions.push(a);
+                }
+            }
+            let scored: Vec<(usize, f32)> = actions.iter().map(|&a| (a, 0.0)).collect();
+            let actions = self.apply_preferences(&scored).ranked.into_iter().map(|c| c.0).collect();
+            (ImpasseKind::None, actions, None)
+        } else {
+            match self.select_operator(&preferred) {
+                Err(tied) => (ImpasseKind::Tie, tied, None),
+                Ok(a) if self.conflicted(a, e) => (ImpasseKind::Conflict, others, None),
+                Ok(a) if repeats(a) => (ImpasseKind::NoChange, others, Some(a)),
+                Ok(a) => {
+                    self.substates.clear();
+                    return Decision { selected: Some(a), impasse: None, substate: None, operators };
+                }
+            }
         };
         let (selected, resolved, substate) = self.reflect(kind, e, &candidates, stuck);
         let reported = match kind {
@@ -196,7 +204,7 @@ impl SigmaEngine {
             ImpasseKind::NoChange => stuck.into_iter().collect(),
             _ => candidates,
         };
-        Decision { selected, impasse: Some((kind, reported, resolved)), substate: Some(substate) }
+        Decision { selected, impasse: Some((kind, reported, resolved)), substate: Some(substate), operators }
     }
 
     /// Opens (or continues) the substate for an impasse and reasons in it.
