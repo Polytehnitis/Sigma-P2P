@@ -331,6 +331,8 @@ impl SigmaEngine {
             vector: self.vector.clone(),
             multi: self.multi.clone(),
             appraisal_priors: self.appraisal_priors.clone(),
+            knowledge: self.knowledge.clone(),
+            knowledge_atoms: self.knowledge_atoms.clone(),
             ..SigmaEngine::default()
         }
     }
