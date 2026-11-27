@@ -306,3 +306,62 @@ fn long_sentences_parse_into_one_projective_tree() {
     assert_eq!(p.core()[0], "mount", "{:?}", p.core());
     assert!(g.log_score(&p).unwrap().is_finite());
 }
+
+#[test]
+fn signed_vectors_are_embedded_in_two_parts() {
+    let id = NodeIdentity::generate();
+    let pred = |name: &str, t: &str| PredicateDef {
+        name: name.into(),
+        role: PredicateRole::Context,
+        args: vec![],
+        value_type: Some(t.into()),
+    };
+    let pat = |kind, name: &str| Pattern { kind, predicate: name.into(), args: vec![] };
+    // Signed 3-dimensional embeddings: hot and cold point in opposite directions.
+    let rows = vec![vec![0.9, -0.3, 0.1], vec![-0.9, 0.3, -0.1], vec![0.1, 0.8, -0.6]];
+    let program = Program {
+        types: vec![TypeDef::symbolic("word", &["hot", "cold", "blue"]), TypeDef::range("dim", 0, 6)],
+        predicates: vec![pred("Word", "word"), pred("Meaning", "dim"), pred("Ref", "dim")],
+        conditionals: vec![Conditional {
+            name: "embed".into(),
+            patterns: vec![pat(PatternKind::Condition, "Word"), pat(PatternKind::Condact, "Meaning")],
+            function_vars: vec![],
+            function: Function::signed_embedding(&rows).unwrap(),
+            learnable: false,
+            normal: None,
+        }],
+    };
+    let flags = Flags { vector: vec!["Meaning".into(), "Ref".into()], replace: vec![] };
+    let mut skill = Skill::program_with_flags("signed", 1, program, vec![], flags);
+    id.sign(&mut skill);
+    assert_eq!(skill.validate(), Ok(()));
+    let mut engine = SigmaEngine::new();
+    engine.compile_skill(skill).unwrap();
+    let read = |e: &mut SigmaEngine, w: usize| {
+        e.set_evidence("Word", w).unwrap();
+        e.signed_vector("Meaning").unwrap()
+    };
+    let unit = |v: &[f32]| {
+        let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.iter().map(|x| x / n).collect::<Vec<f32>>()
+    };
+    for (w, row) in rows.iter().enumerate() {
+        let got = read(&mut engine, w);
+        let want = unit(row);
+        for (g, x) in got.iter().zip(&want) {
+            assert!((g - x).abs() < 0.01, "word {w}: {got:?} vs {want:?}");
+        }
+    }
+    // Opposite meanings have cosine -1, which a non-negative encoding cannot express.
+    let (hot, cold) = (read(&mut engine, 0), read(&mut engine, 1));
+    let cos: f32 = hot.iter().zip(&cold).map(|(a, b)| a * b).sum();
+    assert!(cos < -0.99, "{cos}");
+    // The engine compares two predicates' signed vectors.
+    engine.set_evidence("Word", 0).unwrap();
+    engine.set_evidence("Ref", 0).unwrap();
+    let s = engine.signed_similarity("Meaning", "Ref").unwrap();
+    assert!((s - unit(&rows[0])[0]).abs() < 0.01, "{s}");
+    assert!(Function::signed_embedding(&[vec![1.0], vec![1.0, 2.0]]).is_none(), "ragged");
+    assert!(Function::signed_embedding(&[vec![f32::NAN]]).is_none());
+    assert!(engine.signed_vector("Word").is_none(), "an odd domain has no split encoding");
+}

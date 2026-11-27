@@ -120,6 +120,28 @@ pub struct Piece {
 pub const MAX_PIECES: usize = 1024;
 
 impl Function {
+    /// A table embedding signed vectors in a vector predicate of `2·d` values: row `i` holds
+    /// `rows[i]`'s positive parts then its negative parts (`max(u, 0)` and `max(-u, 0)`), plus
+    /// a small floor, scaled so the largest entry is `MAX_FACTOR_VALUE / 2`. Read the vector
+    /// back with `SigmaEngine::signed_vector`. Factor values stay non-negative, so messages,
+    /// learning and sync work on it unchanged. `None` for no rows, ragged or empty rows, or a
+    /// non-finite value.
+    pub fn signed_embedding(rows: &[Vec<f32>]) -> Option<Function> {
+        let d = rows.first()?.len();
+        if d == 0 || rows.iter().any(|r| r.len() != d || r.iter().any(|x| !x.is_finite())) {
+            return None;
+        }
+        let top = rows.iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
+        let scale = if top > 0.0 { MAX_FACTOR_VALUE / 2.0 / top } else { 1.0 };
+        const FLOOR: f32 = 1e-3;
+        let mut table = Vec::with_capacity(rows.len() * 2 * d);
+        for r in rows {
+            table.extend(r.iter().map(|x| x.max(0.0) * scale + FLOOR));
+            table.extend(r.iter().map(|x| (-x).max(0.0) * scale + FLOOR));
+        }
+        Some(Function::Table(table))
+    }
+
     /// `function` with dimension `dim` (of `n`) read through `x = coef · u + offset`.
     pub fn mapped(function: Function, n: usize, dim: usize, coef: f32, offset: f32) -> Function {
         let mut maps = vec![None; n];

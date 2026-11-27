@@ -639,6 +639,28 @@ impl SigmaEngine {
         (n > 0.0).then_some(dot / n)
     }
 
+    /// The signed vector a vector predicate holds in the split encoding of
+    /// [`Function::signed_embedding`]: its `2·d` values are the positive parts of `d`
+    /// components followed by their negative parts, and the signed vector is their difference,
+    /// normalized to unit length. `None` for an odd domain or no belief.
+    pub fn signed_vector(&self, name: &str) -> Option<Vec<f32>> {
+        let b = self.posterior(name)?;
+        if b.len() < 2 || b.len() % 2 != 0 {
+            return None;
+        }
+        let d = b.len() / 2;
+        let u: Vec<f32> = (0..d).map(|i| b[i] - b[d + i]).collect();
+        let n = u.iter().map(|x| x * x).sum::<f32>().sqrt();
+        (n > 0.0 && n.is_finite()).then(|| u.into_iter().map(|x| x / n).collect())
+    }
+
+    /// Cosine similarity of two signed vectors (see [`SigmaEngine::signed_vector`]): from -1
+    /// (opposite) to 1.
+    pub fn signed_similarity(&self, a: &str, b: &str) -> Option<f32> {
+        let (x, y) = (self.signed_vector(a)?, self.signed_vector(b)?);
+        (x.len() == y.len()).then(|| x.iter().zip(&y).map(|(p, q)| p * q).sum())
+    }
+
     /// Sigma's `replace`: every replace predicate that an action pattern writes into takes the
     /// value its belief now favours (computed without its old value), replacing what working
     /// memory held. Returns what was replaced.
