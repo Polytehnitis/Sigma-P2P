@@ -5,7 +5,7 @@
 //! (`agent/init-smem/*.txt`): tables whose rows its configurator expands into `smem --add`
 //! facts. Two of them are bundled here, verbatim:
 //!
-//! * `category-ontology.txt`: about 95 categories of things (fork, mug, fridge, kitchen, …),
+//! * `category-ontology.txt`: 84 categories of things (fork, mug, fridge, kitchen, …),
 //!   each with its word, its supercategory (a fork is a utensil, a utensil is kitchenware,
 //!   kitchenware is an object …) and the affordances given for it (grabbable, fillable,
 //!   openable, activatable, surface, receptacle, …).
