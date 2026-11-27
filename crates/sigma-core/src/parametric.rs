@@ -13,9 +13,36 @@
 //! grounded from the same function slice, so grid, exact and particle inference all see the
 //! learned form. Learned functions are kept in [`crate::LearnedModels::functions`] (persisted
 //! with the memories) and re-applied when the skill is compiled again, e.g. after a restart.
+//! Each one is also a sync register (`function/<skill>#<offset>`), so a function learned on
+//! one device reaches the user's paired devices; the newest write wins, and a function that
+//! fails [`function_is_valid`] or does not fit the receiving skill's factor is ignored.
 
 use crate::{Function, SigmaEngine, MAX_FACTOR_VALUE};
 use std::sync::Arc;
+
+/// Most coordinates a synced Gaussian may have.
+const MAX_FUNCTION_DIMS: usize = 64;
+
+/// Most learned functions kept (and accepted from paired devices).
+pub const MAX_LEARNED_FUNCTIONS: usize = 256;
+
+/// Whether a learned function received from elsewhere is well formed: a Gaussian with finite
+/// parameters and a positive spread, or a neural net that passes its own checks. (Its fit to a
+/// particular factor is checked when it is applied.)
+pub fn function_is_valid(function: &Function) -> bool {
+    match function {
+        Function::Gaussian { target, mean, std } => {
+            *target < MAX_FUNCTION_DIMS
+                && !mean.is_empty()
+                && mean.len() <= MAX_FUNCTION_DIMS + 1
+                && mean.iter().all(|m| m.is_finite())
+                && std.is_finite()
+                && *std >= MIN_STD
+        }
+        Function::Neural(net) => net.check(net.inputs()).is_ok(),
+        _ => false,
+    }
+}
 
 /// Smallest standard deviation a learned Gaussian keeps.
 const MIN_STD: f32 = 1e-3;
@@ -79,7 +106,26 @@ impl SigmaEngine {
             self.factors[fj].analytic = Some(Arc::new(a));
             self.retabulate(fj);
         }
-        self.models.functions.insert((skill, offset), function);
+        if self.models.functions.len() < MAX_LEARNED_FUNCTIONS
+            || self.models.functions.contains_key(&(skill.clone(), offset))
+        {
+            self.models.functions.insert((skill, offset), function);
+        }
+    }
+
+    /// Takes a function learned on one of the user's other devices for skill `skill`'s factors
+    /// at weight offset `offset`, and applies it to those factors. Returns whether it was kept.
+    pub fn adopt_learned_function(&mut self, skill: &str, offset: usize, function: Function) -> bool {
+        let key = (skill.to_string(), offset);
+        if skill.is_empty()
+            || !function_is_valid(&function)
+            || (!self.models.functions.contains_key(&key) && self.models.functions.len() >= MAX_LEARNED_FUNCTIONS)
+        {
+            return false;
+        }
+        self.models.functions.insert(key, function);
+        self.apply_learned_functions();
+        true
     }
 
     /// One learning step of a Gaussian or neural factor from the observed assignment, when

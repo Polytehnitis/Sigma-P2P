@@ -125,7 +125,7 @@ pub struct LearnedModels {
     /// a transition model conditioned on a second predicate found by structure learning.
     pub contexts: BTreeMap<(String, String), (String, Vec<f32>)>,
     /// `(skill, weight offset)` -> the learned parameters of a Gaussian or neural function
-    /// (see [`crate::parametric`]). Kept on this device with the memories.
+    /// (see [`crate::parametric`]). Persisted with the memories and synced to paired devices.
     pub functions: BTreeMap<(String, usize), crate::Function>,
 }
 

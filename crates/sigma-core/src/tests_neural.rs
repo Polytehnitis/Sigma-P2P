@@ -213,3 +213,59 @@ fn expectation_propagation_moment_matches_continuous_messages() {
     assert_eq!(peaks(&ep), 1, "{ep:?}");
     assert!((mean(&ep) - mean(&bp)).abs() < 0.3, "{} vs {}", mean(&ep), mean(&bp));
 }
+
+#[test]
+fn learned_functions_sync_to_paired_devices() {
+    let open = || {
+        let path = std::env::temp_dir().join(format!("sigma-fn-sync-{}.redb", rand::random::<u64>()));
+        let store = FactorStore::open(path).unwrap();
+        let me = store.load_or_create_identity().unwrap().author_pubkey();
+        (store, me)
+    };
+    let (phone, pc) = (open(), open());
+    let id = NodeIdentity::generate();
+    // The phone trains the net; the PC has the same skill, untrained.
+    let mut trained = activities(&id);
+    for _ in 0..300 {
+        for w in 0..3 {
+            trained.set_evidence("Weather", w).unwrap();
+            trained.set_evidence("Activity", w).unwrap();
+            trained.learn_gradient(0.2);
+        }
+    }
+    trained.clear_evidence("Activity");
+    phone.0.save_memories(&trained).unwrap();
+    let state = phone.0.export_sync_state().unwrap();
+    let key =
+        state.registers.keys().find(|k| k.starts_with(sync::keys::FUNCTION)).cloned().expect("a function register");
+    assert_eq!(sync::keys::function_slot(&key[sync::keys::FUNCTION.len()..]).unwrap().0, "activities");
+
+    let mut untrained = activities(&id);
+    untrained.set_evidence("Weather", 2).unwrap();
+    assert!(untrained.posterior("Activity").unwrap()[2] < 0.6);
+    let report = pc.0.merge_sync_state(phone.1, state).unwrap();
+    assert!(report.changed.contains(&key));
+    pc.0.refresh_engine(&mut untrained, &report).unwrap();
+    assert!(untrained.posterior("Activity").unwrap()[2] > 0.8, "the PC uses the phone's net");
+    assert_eq!(untrained.models.functions, trained.models.functions);
+    // It is stored on the PC too, so a restart keeps it.
+    let mut restarted = activities(&id);
+    pc.0.restore_engine(&mut restarted).unwrap();
+    restarted.set_evidence("Weather", 0).unwrap();
+    assert!(restarted.posterior("Activity").unwrap()[0] > 0.8);
+
+    // Malformed or mismatched functions are refused.
+    let mut bad = NeuralNet::new(&[2, 4, 1], 3);
+    bad.layers[1].bias[0] = f32::INFINITY;
+    assert!(!crate::parametric::function_is_valid(&Function::Neural(bad.clone())));
+    assert!(!untrained.adopt_learned_function("activities", 0, Function::Neural(bad)));
+    let gaussian = Function::Gaussian { target: 0, mean: vec![0.0, 1.0], std: 0.0 };
+    assert!(!crate::parametric::function_is_valid(&gaussian));
+    // A well-formed net of the wrong shape is kept but not applied to the factor.
+    let before = untrained.posterior("Activity").unwrap();
+    assert!(untrained.adopt_learned_function("activities", 999, Function::Neural(NeuralNet::new(&[5, 1], 1))));
+    assert_eq!(untrained.posterior("Activity").unwrap(), before);
+    assert_eq!(sync::keys::function_slot("a#b"), None);
+    assert_eq!(sync::keys::function_slot("#3"), None);
+    assert_eq!(sync::keys::function_slot("x#y#4"), Some(("x#y".into(), 4)));
+}
