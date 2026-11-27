@@ -94,6 +94,11 @@ pub enum Function {
     /// a Gaussian becomes the density of the mapped value). Lets one function be reused in
     /// other units, mirrored or shifted, as an affine pattern does for symbols.
     Mapped { maps: Vec<Option<ValueMap>>, function: Box<Function> },
+    /// A neural energy, as in PySigma: the value at a point is `exp(net(x))` (within the factor
+    /// bounds), where the net reads every coordinate. Gradient learning trains it by
+    /// backpropagation (see [`crate::neural`]). Older nodes reject skills that use it as
+    /// malformed.
+    Neural(crate::neural::NeuralNet),
 }
 
 /// `x = coef · u + offset`, for one dimension of a [`Function::Mapped`].
@@ -137,7 +142,7 @@ impl Function {
         let b: Vec<f32> = maps.iter().map(|m| m.map_or(0.0, |m| -m.offset / m.coef)).collect();
         let x_of = |i: usize, u: f32| maps[i].map_or(u, |m| m.coef * u + m.offset);
         let out = match function.as_ref() {
-            Function::Table(_) => return Err("a mapped function must be analytic"),
+            Function::Table(_) | Function::Neural(_) => return Err("a mapped function must be analytic"),
             Function::Mapped { .. } => return Err("nested value maps"),
             Function::PiecewiseLinear { default, pieces } => {
                 function.check(n)?;
@@ -173,9 +178,15 @@ impl Function {
     }
 
     /// Shape checks for the analytic forms over `n` dimensions.
+    pub(crate) fn check_dims(&self, n: usize) -> Result<(), &'static str> {
+        self.check(n)
+    }
+
+    /// Shape checks for the analytic forms over `n` dimensions.
     fn check(&self, n: usize) -> Result<(), &'static str> {
         match self {
             Function::Table(_) => Ok(()),
+            Function::Neural(net) => net.check(n),
             Function::Mapped { maps, .. } if maps.len() != n => Err("value maps do not match the patterns"),
             Function::Mapped { .. } => self.resolved().map(|_| ()),
             Function::PiecewiseLinear { pieces, .. } => {
@@ -200,6 +211,7 @@ impl Function {
     pub fn eval(&self, x: &[f32], widths: &[f32]) -> f32 {
         match self {
             Function::Table(_) => 0.0,
+            Function::Neural(net) => net.value(x),
             Function::Mapped { .. } => self.resolved().map_or(0.0, |f| f.eval(x, widths)),
             Function::PiecewiseLinear { default, pieces } => {
                 let inside = |p: &&Piece| x.iter().zip(p.lo.iter().zip(&p.hi)).all(|(v, (l, h))| l <= v && v < h);

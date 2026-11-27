@@ -124,6 +124,21 @@ pub struct LearnedModels {
     /// 2 × d × d_parent × d (row-major over action, current value, parent's value, next value):
     /// a transition model conditioned on a second predicate found by structure learning.
     pub contexts: BTreeMap<(String, String), (String, Vec<f32>)>,
+    /// `(skill, weight offset)` -> the learned parameters of a Gaussian or neural function
+    /// (see [`crate::parametric`]). Kept on this device with the memories.
+    pub functions: BTreeMap<(String, usize), crate::Function>,
+}
+
+/// The models as stored before learned analytic functions existed.
+#[derive(Deserialize)]
+struct ModelsV3 {
+    effects: BTreeMap<(String, String), Vec<f32>>,
+    rewards: BTreeMap<String, Vec<f32>>,
+    transitions: BTreeMap<(String, String), Vec<f32>>,
+    perceptions: BTreeMap<(String, String), Vec<f32>>,
+    utilities: BTreeMap<(String, String), f32>,
+    q_features: BTreeMap<(String, String), f32>,
+    contexts: BTreeMap<(String, String), (String, Vec<f32>)>,
 }
 
 /// The models as stored before linear utilities and context-conditioned transitions existed.
@@ -262,6 +277,18 @@ impl LearnedModels {
     /// utility models existed.
     pub fn decode(bytes: &[u8]) -> Result<Self, postcard::Error> {
         postcard::from_bytes::<Self>(bytes).or_else(|e| {
+            if let Ok(v3) = postcard::from_bytes::<ModelsV3>(bytes) {
+                return Ok(LearnedModels {
+                    effects: v3.effects,
+                    rewards: v3.rewards,
+                    transitions: v3.transitions,
+                    perceptions: v3.perceptions,
+                    utilities: v3.utilities,
+                    q_features: v3.q_features,
+                    contexts: v3.contexts,
+                    ..Default::default()
+                });
+            }
             if let Ok(v2) = postcard::from_bytes::<ModelsV2>(bytes) {
                 return Ok(LearnedModels {
                     effects: v2.effects,
@@ -408,6 +435,7 @@ impl SigmaEngine {
     /// cycle, so recall sees every episode recorded so far).
     pub fn rebuild_memory_factors(&mut self) {
         self.save_models();
+        self.apply_learned_functions();
         self.factors.retain(|f| !f.memory);
         for name in [EPISODIC_SKILL, SEMANTIC_SKILL, MODEL_SKILL, PERCEPTION_SKILL, UTILITY_SKILL, APPRAISAL_SKILL] {
             self.initial.remove(name);

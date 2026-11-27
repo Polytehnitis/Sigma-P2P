@@ -21,6 +21,8 @@ pub mod language;
 pub mod map;
 pub mod memory;
 pub mod mind;
+pub mod neural;
+pub mod parametric;
 pub mod particles;
 pub mod plm;
 pub mod program;
@@ -76,6 +78,25 @@ pub enum Inference {
     /// Max-product: beliefs are max-marginals, the probability of the best joint assignment
     /// that gives the variable each value, so their argmaxes form a MAP estimate.
     MaxProduct,
+    /// Variational message passing (mean field), as PySigma declares: a factor sends each
+    /// variable `exp(E_q[log f])`, the expectation over the other variables' current beliefs,
+    /// so beliefs are a fully factorized approximation that minimizes `KL(q || p)`. Runs on
+    /// the region grid.
+    VariationalMessagePassing,
+    /// Expectation propagation with a Gaussian family for continuous variables, as PySigma
+    /// declares: a factor's message into a continuous variable is the moment-matched Gaussian
+    /// of the tilted belief (cavity times the exact message) divided by the cavity. Discrete
+    /// variables get sum-product messages (EP with a categorical family). Runs on the region
+    /// grid.
+    ExpectationPropagation,
+}
+
+impl Inference {
+    /// Whether this kind of inference runs only on the region grid (not on exact
+    /// piecewise-linear functions or particles).
+    pub fn grid_only(self) -> bool {
+        matches!(self, Inference::VariationalMessagePassing | Inference::ExpectationPropagation)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -468,6 +489,7 @@ impl SigmaEngine {
         self.skills.push(skill);
         // Memory factors stay after the skill factors.
         self.factors.sort_by_key(|f| f.memory);
+        self.apply_learned_functions();
         self.trace = None;
         Ok(())
     }
@@ -1024,6 +1046,11 @@ impl SigmaEngine {
                     None => self.belief(v, &prior, &msgs, Some((fi, s))),
                 })
                 .collect();
+            // Gaussian and neural functions learn their parameters, not just their tables.
+            if let Some(ll) = self.learn_analytic(fi, rate) {
+                log_z += ll;
+                continue;
+            }
             let Some(z) = gradient_step(&mut self.factors[fi], &inbound, rate) else { continue };
             log_z += z.ln();
             touched.insert(self.factors[fi].skill.skill_name.clone());
@@ -1135,6 +1162,10 @@ impl SigmaEngine {
     }
 
     fn infer_raw(&self, clamp: impl Fn(usize) -> Option<usize>) -> Vec<Vec<f32>> {
+        if self.inference.grid_only() {
+            let (prior, msgs) = self.propagate(clamp);
+            return (0..self.vars.len()).map(|v| self.belief(v, &prior, &msgs, None)).collect();
+        }
         if let Some(n) = self.particle_count {
             if let Some((beliefs, _)) = self.infer_particles(&clamp, n) {
                 return beliefs;
@@ -1214,6 +1245,8 @@ impl SigmaEngine {
         let universal: Vec<Vec<bool>> =
             self.factors.iter().map(|f| f.vars.iter().map(|&v| !self.options_of(v).unique).collect()).collect();
         let maximize = self.inference == Inference::MaxProduct;
+        let variational = self.inference == Inference::VariationalMessagePassing;
+        let ep = self.inference == Inference::ExpectationPropagation;
         for _ in 0..BP_ITERS {
             let next: Vec<Vec<Vec<f32>>> = self
                 .factors
@@ -1229,6 +1262,8 @@ impl SigmaEngine {
                         .enumerate()
                         .map(|(s, &v)| match f.kinds[s] {
                             PatternKind::Action => uniform(v),
+                            // Mean field: the other variables' whole beliefs, not cavities.
+                            _ if variational => self.belief(v, fixed, &msgs, None),
                             _ => self.belief(v, fixed, &msgs, Some((fi, s))),
                         })
                         .collect();
@@ -1236,6 +1271,27 @@ impl SigmaEngine {
                         .map(|s| {
                             if f.kinds[s] == PatternKind::Condition {
                                 return uniform(f.vars[s]);
+                            }
+                            if variational {
+                                // exp(E_q[log f]) over the other slots.
+                                let mut out = vec![0.0f32; inbound[s].len()];
+                                for (idx, &w) in tables[fi].indexed_iter() {
+                                    let q = (0..inbound.len())
+                                        .filter(|&j| j != s)
+                                        .fold(1.0, |acc, j| acc * inbound[j][idx[j]]);
+                                    out[idx[s]] += q * w.max(1e-30).ln();
+                                }
+                                let top = out.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                                return normalize(out.into_iter().map(|l| (l - top).exp()).collect());
+                            }
+                            if ep && self.vars[f.vars[s]].range.is_some() {
+                                let mut out = vec![0.0; inbound[s].len()];
+                                for (idx, &w) in tables[fi].indexed_iter() {
+                                    out[idx[s]] += (0..inbound.len())
+                                        .filter(|&j| j != s)
+                                        .fold(w, |acc, j| acc * inbound[j][idx[j]]);
+                                }
+                                return self.ep_project(f.vars[s], &inbound[s], normalize(out));
                             }
                             if maximize {
                                 // Max-product: every other slot is maximized over.
@@ -1290,6 +1346,30 @@ impl SigmaEngine {
             }
         }
         msgs
+    }
+
+    /// Expectation propagation's projection of a factor's message `msg` into continuous
+    /// variable `v`, given the cavity (its belief without this factor): the tilted belief
+    /// `cavity · msg` is moment-matched by a Gaussian (its mean and variance, plus the region
+    /// width's own spread), and the message is that Gaussian divided by the cavity.
+    fn ep_project(&self, v: usize, cavity: &[f32], msg: Vec<f32>) -> Vec<f32> {
+        let Some((lo, hi)) = self.vars[v].range else { return msg };
+        if self.vars[v].evidence.is_some() {
+            return msg;
+        }
+        let d = msg.len();
+        let w = (hi - lo) / d as f32;
+        let centres: Vec<f32> = (0..d).map(|i| lo + (i as f32 + 0.5) * w).collect();
+        let tilted = normalize(cavity.iter().zip(&msg).map(|(c, m)| c * m).collect());
+        let mean: f32 = tilted.iter().zip(&centres).map(|(p, x)| p * x).sum();
+        let var = tilted.iter().zip(&centres).map(|(p, x)| p * (x - mean).powi(2)).sum::<f32>() + w * w / 12.0;
+        if !(var.is_finite() && var > 0.0) {
+            return msg;
+        }
+        let q: Vec<f32> = centres.iter().map(|x| (-0.5 * (x - mean).powi(2) / var).exp()).collect();
+        let out: Vec<f32> =
+            q.iter().zip(cavity).map(|(q, c)| if *c > 1e-12 { (q / c).min(1e12) } else { *q }).collect();
+        normalize(out)
     }
 
     fn belief(&self, v: usize, prior: &[Vec<f32>], msgs: &[Vec<Vec<f32>>], skip: Option<(usize, usize)>) -> Vec<f32> {
@@ -1404,6 +1484,8 @@ mod tests_memory;
 mod tests_mind;
 #[cfg(test)]
 mod tests_models;
+#[cfg(test)]
+mod tests_neural;
 #[cfg(test)]
 mod tests_options;
 #[cfg(test)]
