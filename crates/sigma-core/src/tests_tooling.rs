@@ -336,3 +336,73 @@ fn regression_snapshots_follow_the_goal_chaining_demo() {
     assert!(mounted.belief[1] > 0.999);
     assert!(snap.to_dot().contains("style=bold"));
 }
+
+/// Setting (low, high) -> Temp in [0, 40): a Gaussian whose mean depends on the setting.
+fn heating() -> SigmaEngine {
+    let id = NodeIdentity::generate();
+    let pred = |name: &str, t: &str| PredicateDef {
+        name: name.into(),
+        role: Context,
+        args: vec![],
+        value_type: Some(t.into()),
+    };
+    let pat = |kind, name: &str| Pattern { kind, predicate: name.into(), args: vec![] };
+    let program = Program {
+        types: vec![TypeDef::symbolic("setting", &["low", "high"]), TypeDef::continuous("celsius", 0.0, 40.0, 20)],
+        predicates: vec![pred("Setting", "setting"), pred("Temp", "celsius")],
+        conditionals: vec![Conditional {
+            name: "heat".into(),
+            patterns: vec![pat(PatternKind::Condact, "Setting"), pat(PatternKind::Condact, "Temp")],
+            function_vars: vec![],
+            function: Function::Gaussian { target: 1, mean: vec![15.0, 10.0, 0.0], std: 3.0 },
+            learnable: false,
+            normal: None,
+        }],
+    };
+    let mut engine = SigmaEngine::new();
+    engine.compile_skill(crate::tests_v2::signed_program(&id, "heating", program)).unwrap();
+    engine
+}
+
+#[test]
+fn traces_follow_the_exact_and_particle_paths() {
+    let mut engine = heating();
+    engine.set_value("Temp", 26.0).unwrap();
+    let trace = engine.trace_messages();
+    assert_eq!(trace.path, crate::inspect::TracePath::Exact);
+    assert!(trace.converged && !trace.sweeps.is_empty());
+    // The message into Setting says "high" (the reading is near 25, not 15).
+    let into = trace.messages_into("Setting");
+    assert_eq!(into.len(), 1);
+    assert!(into[0].message[1] > into[0].message[0], "{:?}", into[0].message);
+    let setting = &trace.beliefs.iter().find(|(n, _)| n == "Setting").unwrap().1;
+    let plain = engine.posterior("Setting").unwrap();
+    assert!((setting[1] - plain[1]).abs() < 1e-3, "{setting:?} vs {plain:?}");
+
+    engine.clear_evidence("Temp");
+    engine.set_evidence("Setting", 0).unwrap();
+    engine.particle_count = Some(64);
+    let trace = engine.trace_messages();
+    assert_eq!(trace.path, crate::inspect::TracePath::Particles);
+    let rounds: std::collections::BTreeSet<usize> = trace.sweeps.iter().map(|s| s.round).collect();
+    assert!(rounds.len() > 1, "every round is recorded: {rounds:?}");
+    let into = trace.messages_into("Temp");
+    assert!(!into.is_empty() && into[0].message.len() == 64, "messages over the particles");
+    // The grid path is still traced when nothing is continuous.
+    let grid = demo_engine().trace_messages();
+    assert_eq!(grid.path, crate::inspect::TracePath::Grid);
+}
+
+#[test]
+fn the_live_viewer_polls_for_snapshots() {
+    let engine = demo_engine();
+    let snap = engine.graph_snapshot().visible();
+    let page = snap.to_live_html("graph.json", 500);
+    assert!(page.contains(r#"const LIVE={"url":"graph.json","ms":500}"#), "live settings");
+    assert!(page.contains("setInterval") && page.contains("SubgoalMountNAS"));
+    assert!(!page.contains("__LIVE__") && !page.contains("__GRAPH__"));
+    assert!(snap.to_html().contains("const LIVE=null"), "a static page does not poll");
+    // A URL cannot break out of the script.
+    let page = snap.to_live_html("</script><script>alert(1)</script>", 100);
+    assert!(!page.contains("</script><script>alert"));
+}

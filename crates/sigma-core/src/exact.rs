@@ -107,6 +107,16 @@ impl SigmaEngine {
 
     /// Runs exact message passing to quiescence.
     pub(crate) fn exact_state(&self, clamp: &dyn Fn(usize) -> Option<usize>) -> Option<ExactState> {
+        self.exact_state_traced(clamp, None)
+    }
+
+    /// [`SigmaEngine::exact_state`], recording every sweep in `trace` (each piecewise-linear
+    /// message as its mass on the variable's regions).
+    pub(crate) fn exact_state_traced(
+        &self,
+        clamp: &dyn Fn(usize) -> Option<usize>,
+        mut trace: Option<&mut crate::inspect::Recorder>,
+    ) -> Option<ExactState> {
         if !self.uses_exact() {
             return None;
         }
@@ -175,6 +185,20 @@ impl SigmaEngine {
                 .flatten()
                 .zip(state.msgs.iter().flatten())
                 .fold(0.0f64, |m, (a, b)| m.max(a.l1_distance(b)));
+            if let Some(t) = trace.as_deref_mut() {
+                let masses = |msgs: &[Vec<Plm>]| -> Vec<Vec<Vec<f32>>> {
+                    msgs.iter()
+                        .zip(&self.factors)
+                        .map(|(fm, f)| {
+                            fm.iter()
+                                .zip(&f.vars)
+                                .map(|(m, &v)| m.masses(&self.grid_bounds(v)).into_iter().map(|x| x as f32).collect())
+                                .collect()
+                        })
+                        .collect()
+                };
+                t.record(&masses(&state.msgs), &masses(&next), delta as f32);
+            }
             state.msgs = next;
             if delta < TOLERANCE {
                 break;

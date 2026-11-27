@@ -50,9 +50,56 @@ struct Args {
     /// messages that changed) and exit.
     #[arg(long)]
     trace_messages: bool,
-    /// With --dump-graph, keep internal variables (memories, models) in the picture.
+    /// With --dump-graph or --serve-graph, keep internal variables (memories, models) in the
+    /// picture.
     #[arg(long)]
     show_internal: bool,
+    /// Serve a live view of the factor graph at this address (e.g. 127.0.0.1:7878): the page
+    /// at `/` redraws as skills arrive and syncs change beliefs; `/graph.json` is the snapshot.
+    #[arg(long, value_name = "ADDR")]
+    serve_graph: Option<std::net::SocketAddr>,
+}
+
+/// The latest graph snapshot, as JSON, shared with the viewer's server thread.
+type SharedGraph = Arc<std::sync::Mutex<String>>;
+
+fn snapshot_json(engine: &SigmaEngine, show_internal: bool) -> String {
+    let snapshot = engine.graph_snapshot();
+    if show_internal { snapshot } else { snapshot.visible() }.to_json()
+}
+
+/// Serves the live viewer at `/` and the latest snapshot at `/graph.json`, one request per
+/// connection, on a plain thread.
+fn serve_graph(addr: std::net::SocketAddr, graph: SharedGraph) -> Result<()> {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind(addr)?;
+    println!("Graph viewer:        http://{addr}/");
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() {
+                continue;
+            }
+            let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+            let json = graph.lock().map(|g| g.clone()).unwrap_or_default();
+            let (status, kind, body) = match path.as_str() {
+                "/graph.json" => ("200 OK", "application/json", json),
+                "/" | "/index.html" => {
+                    let page = sigma_core::inspect::live_viewer("graph.json", 1000, &json);
+                    ("200 OK", "text/html; charset=utf-8", page)
+                }
+                _ => ("404 Not Found", "text/plain", "not found".to_string()),
+            };
+            let mut out = &stream;
+            let _ = write!(
+                out,
+                "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    Ok(())
 }
 
 /// Renders a graph snapshot in the format the file extension names.
@@ -143,6 +190,17 @@ async fn main() -> Result<()> {
         }
         return Ok(());
     }
+    let graph: SharedGraph = Arc::new(std::sync::Mutex::new(snapshot_json(&engine, args.show_internal)));
+    if let Some(addr) = args.serve_graph {
+        serve_graph(addr, graph.clone())?;
+    }
+    let refresh = |engine: &SigmaEngine| {
+        if args.serve_graph.is_some() {
+            if let Ok(mut g) = graph.lock() {
+                *g = snapshot_json(engine, args.show_internal);
+            }
+        }
+    };
     let mut node = SkillMeshNode::spawn(&args.swarm, args.bootstrap_peers, store.clone()).await?;
     // Ground chunks describe the user's own situations: they stay on the user's devices.
     for skill in restored.iter().filter(|s| sigma_core::substate::offered_to_peers(s)).cloned() {
@@ -179,6 +237,7 @@ async fn main() -> Result<()> {
                 }
                 store.save_skill(&skill).map_err(|e| anyhow!(e))?;
                 println!("learned {} v{} from {}", skill.skill_name, skill.version, &crypto::to_hex(&skill.author_pubkey)[..12]);
+                refresh(&engine);
                 node.publish_local_skill(skill)?;
             }
             Some(report) = node.synced.recv() => {
@@ -186,6 +245,7 @@ async fn main() -> Result<()> {
                 for skill in compiled.into_iter().filter(sigma_core::substate::offered_to_peers) {
                     node.publish_local_skill(skill)?;
                 }
+                refresh(&engine);
                 let from = &crypto::to_hex(&report.from)[..12];
                 println!("synced {} change(s) from device {from}", report.changed.len() + report.memories_changed as usize);
             }

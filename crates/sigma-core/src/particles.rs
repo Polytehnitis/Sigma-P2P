@@ -102,6 +102,9 @@ fn normal(rng: &mut impl Rng) -> f32 {
     (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
 }
 
+/// Region beliefs of every variable, and the particles of the continuous ones.
+pub(crate) type ParticleBeliefs = (Vec<Vec<f32>>, HashMap<usize, Particles>);
+
 impl SigmaEngine {
     /// The posterior of a continuous predicate as a particle message, given working memory
     /// alone. Uses `particle_count` particles (or `DEFAULT_PARTICLES`).
@@ -115,11 +118,18 @@ impl SigmaEngine {
     /// particle beliefs of continuous ones, or `None` when there is nothing continuous to do
     /// (or a particle table would be too large), in which case the caller uses the grid.
     #[allow(clippy::type_complexity)]
-    pub(crate) fn infer_particles(
+    pub(crate) fn infer_particles(&self, clamp: &dyn Fn(usize) -> Option<usize>, n: usize) -> Option<ParticleBeliefs> {
+        self.infer_particles_traced(clamp, n, None)
+    }
+
+    /// [`SigmaEngine::infer_particles`], recording every sweep of every round in `trace`
+    /// (messages are vectors over the particles of that round).
+    pub(crate) fn infer_particles_traced(
         &self,
         clamp: &dyn Fn(usize) -> Option<usize>,
         n: usize,
-    ) -> Option<(Vec<Vec<f32>>, HashMap<usize, Particles>)> {
+        mut trace: Option<&mut crate::inspect::Recorder>,
+    ) -> Option<ParticleBeliefs> {
         let n = n.clamp(1, MAX_PARTICLES);
         let cont: Vec<usize> = (0..self.vars.len())
             .filter(|&v| self.vars[v].range.is_some() && self.factors.iter().any(|f| f.vars.contains(&v)))
@@ -156,7 +166,10 @@ impl SigmaEngine {
                 .collect::<Option<_>>()?;
             let tables: Vec<&ArrayD<f32>> =
                 self.factors.iter().zip(&owned).map(|(f, t)| t.as_ref().unwrap_or(&f.table)).collect();
-            let msgs = self.message_passing(&prior, &tables);
+            if let Some(t) = trace.as_deref_mut() {
+                t.round = round;
+            }
+            let msgs = self.message_passing_traced(&prior, &tables, trace.as_deref_mut());
             beliefs = (0..self.vars.len()).map(|v| self.belief(v, &prior, &msgs, None)).collect();
             if round + 1 < ROUNDS {
                 for (&v, d) in doms.iter_mut().filter(|(_, d)| !d.delta) {
