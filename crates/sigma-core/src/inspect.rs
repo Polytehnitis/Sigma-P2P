@@ -7,9 +7,12 @@
 //!   (variables as circles, factors as squares, pattern kinds on the edges, beliefs as bars)
 //!   and lets you drag nodes and click one to see its details.
 //! * [`SigmaEngine::trace_messages`] runs message passing as elaboration does (stacked goals
-//!   desired, open subgoals assumed false) and records every sweep: its largest change and the
-//!   factor-to-variable messages that changed in it, so a belief can be traced back to the
-//!   factors that produced it.
+//!   desired, open subgoals assumed false), on whichever path the engine uses for the graph
+//!   (particles, exact piecewise-linear functions or the region grid), and records every
+//!   sweep: its largest change and the factor-to-variable messages that changed in it, so a
+//!   belief can be traced back to the factors that produced it.
+//! * [`GraphSnapshot::to_live_html`] is the same viewer polling a URL for fresh snapshots, as
+//!   the daemon's `--serve-graph` serves it, so beliefs update while the agent runs.
 //!
 //! The daemon writes these with `--dump-graph FILE` (`.dot`, `.json` or `.html`) and
 //! `--trace-messages`.
@@ -66,9 +69,22 @@ pub struct TracedMessage {
     pub message: Vec<f32>,
 }
 
+/// Which inference a trace followed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TracePath {
+    /// The region grid.
+    Grid,
+    /// Exact piecewise-linear messages (recorded as their mass on each region).
+    Exact,
+    /// Particles (recorded over each round's particles).
+    Particles,
+}
+
 /// One sweep of message passing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TraceSweep {
+    /// The particle round it belongs to (0 except on the particle path).
+    pub round: usize,
     /// Largest change of any message in this sweep.
     pub delta: f32,
     /// Messages that changed in it (until [`MAX_TRACED_MESSAGES`] is reached).
@@ -78,6 +94,8 @@ pub struct TraceSweep {
 /// A recorded run of message passing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MessageTrace {
+    /// The inference the engine runs on this graph, and so the one traced.
+    pub path: TracePath,
     pub sweeps: Vec<TraceSweep>,
     /// Whether it reached quiescence (else it stopped at the sweep limit).
     pub converged: bool,
@@ -104,6 +122,8 @@ pub(crate) struct Recorder {
     names: Vec<(String, Vec<String>)>,
     sweeps: Vec<TraceSweep>,
     kept: usize,
+    /// The particle round being recorded.
+    pub(crate) round: usize,
 }
 
 impl Recorder {
@@ -125,7 +145,7 @@ impl Recorder {
                 }
             }
         }
-        self.sweeps.push(TraceSweep { delta, changed });
+        self.sweeps.push(TraceSweep { round: self.round, delta, changed });
     }
 }
 
@@ -162,8 +182,9 @@ impl SigmaEngine {
         GraphSnapshot { variables, factors, goal_stack: self.goal_stack.clone() }
     }
 
-    /// Runs grid message passing as elaboration does (stacked goals desired, open subgoals
-    /// assumed false) and records every sweep.
+    /// Runs message passing as elaboration does (stacked goals desired, open subgoals assumed
+    /// false) on the path the engine uses for this graph (particles, exact piecewise-linear
+    /// functions or the region grid) and records every sweep.
     pub fn trace_messages(&self) -> MessageTrace {
         let stacked: Vec<usize> = self.goal_stack.iter().filter_map(|g| self.index.get(g).copied()).collect();
         let clamp = |v: usize| match self.vars[v].schema.role {
@@ -171,21 +192,38 @@ impl SigmaEngine {
             PredicateRole::Subgoal => Some(0),
             _ => None,
         };
-        let prior = self.grid_prior(&clamp);
-        let tables: Vec<&ndarray::ArrayD<f32>> = self.factors.iter().map(|f| &f.table).collect();
         let names = self
             .factors
             .iter()
             .map(|f| (f.skill.skill_name.clone(), f.vars.iter().map(|&v| self.vars[v].schema.name.clone()).collect()))
             .collect();
-        let mut recorder = Recorder { names, sweeps: Vec::new(), kept: 0 };
+        let mut recorder = Recorder { names, sweeps: Vec::new(), kept: 0, round: 0 };
+        let visible: Vec<usize> =
+            (0..self.vars.len()).filter(|&v| !crate::graph_memory::internal(&self.vars[v].schema.name)).collect();
+        let named = |beliefs: &[Vec<f32>]| -> Vec<(String, Vec<f32>)> {
+            visible.iter().map(|&v| (self.vars[v].schema.name.clone(), beliefs[v].clone())).collect()
+        };
+        if let Some(n) = self.particle_count.filter(|_| !self.inference.grid_only()) {
+            if let Some((beliefs, _)) = self.infer_particles_traced(&clamp, n, Some(&mut recorder)) {
+                return self.finish(TracePath::Particles, recorder, named(&beliefs));
+            }
+            recorder.sweeps.clear();
+        }
+        if let Some(state) = self.exact_state_traced(&clamp, Some(&mut recorder)) {
+            let beliefs: Vec<Vec<f32>> = (0..self.vars.len()).map(|v| state.grid_belief(self, v, None)).collect();
+            return self.finish(TracePath::Exact, recorder, named(&beliefs));
+        }
+        let prior = self.grid_prior(&clamp);
+        let tables: Vec<&ndarray::ArrayD<f32>> = self.factors.iter().map(|f| &f.table).collect();
         let msgs = self.message_passing_traced(&prior, &tables, Some(&mut recorder));
-        let converged = recorder.sweeps.last().is_some_and(|s| s.delta < crate::BP_TOLERANCE);
-        let beliefs = (0..self.vars.len())
-            .filter(|&v| !crate::graph_memory::internal(&self.vars[v].schema.name))
-            .map(|v| (self.vars[v].schema.name.clone(), self.belief(v, &prior, &msgs, None)))
-            .collect();
-        MessageTrace { sweeps: recorder.sweeps, converged, beliefs }
+        let beliefs: Vec<Vec<f32>> = (0..self.vars.len()).map(|v| self.belief(v, &prior, &msgs, None)).collect();
+        self.finish(TracePath::Grid, recorder, named(&beliefs))
+    }
+
+    fn finish(&self, path: TracePath, recorder: Recorder, beliefs: Vec<(String, Vec<f32>)>) -> MessageTrace {
+        let tolerance = if path == TracePath::Exact { 1e-5 } else { crate::BP_TOLERANCE };
+        let converged = recorder.sweeps.last().is_some_and(|s| s.delta < tolerance);
+        MessageTrace { path, sweeps: recorder.sweeps, converged, beliefs }
     }
 }
 
@@ -345,8 +383,22 @@ impl GraphSnapshot {
     /// A self-contained HTML page that draws the graph with a small force layout: drag nodes,
     /// click one for its details (a variable's belief, a factor's slots).
     pub fn to_html(&self) -> String {
-        VIEWER.replace("__GRAPH__", &self.to_json())
+        VIEWER.replace("__LIVE__", "null").replace("__GRAPH__", &self.to_json())
     }
+
+    /// The viewer, fetching a fresh snapshot (JSON, as [`GraphSnapshot::to_json`] writes it)
+    /// from `url` every `interval_ms` milliseconds: beliefs, evidence and the goal stack update
+    /// in place, and the page redraws when variables or factors were added or removed.
+    pub fn to_live_html(&self, url: &str, interval_ms: u32) -> String {
+        live_viewer(url, interval_ms, &self.to_json())
+    }
+}
+
+/// The live viewer page for a snapshot already rendered as JSON (see
+/// [`GraphSnapshot::to_live_html`]), for servers that keep the JSON rather than the snapshot.
+pub fn live_viewer(url: &str, interval_ms: u32, graph_json: &str) -> String {
+    let live = format!("{{\"url\":{},\"ms\":{}}}", json_string(url), interval_ms.max(100));
+    VIEWER.replace("__LIVE__", &live).replace("__GRAPH__", graph_json)
 }
 
 const VIEWER: &str = r##"<!DOCTYPE html>
@@ -361,7 +413,7 @@ line{stroke:#8a93a0}line.condition{stroke-dasharray:4 3}line.action{stroke:#c241
 </style></head><body>
 <svg id="g"></svg><div id="side"><h1>Sigma factor graph</h1><p id="info">Click a variable (circle) or a factor (square). Dashed edges are conditions, orange edges actions.</p></div>
 <script>
-const G=__GRAPH__;const svg=document.getElementById('g');const NS='http://www.w3.org/2000/svg';
+let G=__GRAPH__;const LIVE=__LIVE__;let selected=null;const svg=document.getElementById('g');const NS='http://www.w3.org/2000/svg';
 const W=()=>svg.clientWidth||800,H=()=>svg.clientHeight||600;
 const colors={goal:'#f5c542',subgoal:'#f9e3a0',action:'#f4a582',context:'#a6cee3'};
 const nodes=[];G.variables.forEach((v,i)=>nodes.push({kind:'v',i,label:v.name,x:Math.random()*W(),y:Math.random()*H()}));
@@ -377,7 +429,12 @@ const shapes=nodes.map(n=>{const g=document.createElementNS(NS,'g');let s;
 let drag=null;svg.addEventListener('mousemove',ev=>{if(drag){const r=svg.getBoundingClientRect();drag.x=ev.clientX-r.left;drag.y=ev.clientY-r.top;drag.fixed=true}});
 window.addEventListener('mouseup',()=>drag=null);
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
-function show(n){const info=document.getElementById('info');
+function style(){nodes.forEach((n,k)=>{if(n.kind!=='v')return;const v=G.variables[n.i];const s=shapes[k].firstChild;
+ s.setAttribute('r',G.goal_stack.includes(v.name)?14:10);s.setAttribute('stroke-width',v.evidence!==null?3:1.5)})}
+const shapeOf=g=>JSON.stringify([g.variables.map(v=>v.name),g.factors.map(f=>[f.skill,f.variables])]);
+if(LIVE)setInterval(()=>fetch(LIVE.url,{cache:'no-store'}).then(r=>r.json()).then(next=>{
+ if(shapeOf(next)!==shapeOf(G)){location.reload();return}G=next;style();if(selected)show(selected)}).catch(()=>{}),LIVE.ms);
+function show(n){selected=n;const info=document.getElementById('info');
  if(n.kind==='v'){const v=G.variables[n.i];let h='<b>'+esc(v.name)+'</b><br>'+v.role+(v.evidence!==null?' · evidence '+v.evidence:'')+'<br><br>';
   v.belief.forEach((p,x)=>h+='<div class="row"><span>'+x+'</span><div class="bar" style="width:'+(p*200).toFixed(0)+'px"></div>'+p.toFixed(3)+'</div>');info.innerHTML=h}
  else{const f=G.factors[n.i];let h='<b>'+esc(f.skill)+'</b><br>'+(f.memory?'memory or model':'skill')+(f.analytic?' · analytic':'')+' · '+f.entries+' entries<br><br>';
