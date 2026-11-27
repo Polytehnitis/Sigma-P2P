@@ -75,8 +75,8 @@ pub const REWARDED: &str = "@Rewarded";
 pub const CATEGORY: &str = "@Category";
 const EPISODIC_SKILL: &str = "@episodic";
 const SEMANTIC_SKILL: &str = "@semantic";
-const MODEL_SKILL: &str = "@models";
-const PERCEPTION_SKILL: &str = "@perception";
+pub(crate) const MODEL_SKILL: &str = "@models";
+pub(crate) const PERCEPTION_SKILL: &str = "@perception";
 const UTILITY_SKILL: &str = "@utility";
 
 /// The predicate predicting `p`'s value after action `a`.
@@ -114,8 +114,35 @@ pub struct LearnedModels {
     /// `(observation, state)` -> `P(observation | state)`, d_state × d_observation. Declared
     /// with [`SigmaEngine::declare_perception_model`].
     pub perceptions: BTreeMap<(String, String), Vec<f32>>,
-    /// `(action, state key)` -> backed-up utility `Q(s, a)` (see [`SigmaEngine::state_key`]).
+    /// `(action, state key)` -> the exact-state part of the backed-up utility `Q(s, a)` (see
+    /// [`SigmaEngine::state_key`]).
     pub utilities: BTreeMap<(String, String), f32>,
+    /// `(action, feature)` -> weight of a state feature in the linear part of `Q(s, a)`, which
+    /// generalizes to states never seen (see [`SigmaEngine::q_features`]).
+    pub q_features: BTreeMap<(String, String), f32>,
+    /// `(action, predicate)` -> `(parent, P(predicate after | action, predicate now, parent now))`,
+    /// 2 × d × d_parent × d (row-major over action, current value, parent's value, next value):
+    /// a transition model conditioned on a second predicate found by structure learning.
+    pub contexts: BTreeMap<(String, String), (String, Vec<f32>)>,
+}
+
+/// The models as stored before linear utilities and context-conditioned transitions existed.
+#[derive(Deserialize)]
+struct ModelsV2 {
+    effects: BTreeMap<(String, String), Vec<f32>>,
+    rewards: BTreeMap<String, Vec<f32>>,
+    transitions: BTreeMap<(String, String), Vec<f32>>,
+    perceptions: BTreeMap<(String, String), Vec<f32>>,
+    utilities: BTreeMap<(String, String), f32>,
+}
+
+/// An action's models as synced before linear utilities and context-conditioned transitions.
+#[derive(Deserialize)]
+struct ActionModelV2 {
+    reward: Option<Vec<f32>>,
+    effects: BTreeMap<String, Vec<f32>>,
+    transitions: BTreeMap<String, Vec<f32>>,
+    utilities: BTreeMap<String, f32>,
 }
 
 /// The models as stored before transition, perception and utility models existed.
@@ -141,8 +168,12 @@ pub struct ActionModel {
     pub effects: BTreeMap<String, Vec<f32>>,
     /// Predicate -> `P(predicate after | action, predicate now)`, 2 × d × d.
     pub transitions: BTreeMap<String, Vec<f32>>,
-    /// State key -> backed-up utility of the action in that state.
+    /// State key -> the exact-state part of the action's backed-up utility in that state.
     pub utilities: BTreeMap<String, f32>,
+    /// State feature -> its weight in the linear part of the action's utility.
+    pub features: BTreeMap<String, f32>,
+    /// Predicate -> `(parent, P(predicate after | action, predicate now, parent now))`.
+    pub contexts: BTreeMap<String, (String, Vec<f32>)>,
 }
 
 /// Longest action or predicate name a synced model may carry.
@@ -163,16 +194,48 @@ impl ActionModel {
             && self.transitions.iter().all(|(p, t)| name_ok(p) && square(t.len()) && table_ok(t))
             && self.utilities.len() <= MAX_Q_STATES
             && self.utilities.iter().all(|(s, q)| s.len() <= MAX_STATE_KEY && q.is_finite() && q.abs() <= MAX_Q)
+            && self.features.len() <= MAX_Q_STATES
+            && self.features.iter().all(|(f, w)| f.len() <= MAX_STATE_KEY && w.is_finite() && w.abs() <= MAX_Q)
+            && self.contexts.len() <= MAX_MODEL_FACTORS
+            && self.contexts.iter().all(|(p, (q, t))| {
+                name_ok(p)
+                    && name_ok(q)
+                    && p != q
+                    && (2..=MAX_MODEL_DOMAIN).any(|d| (2..=MAX_MODEL_DOMAIN).any(|dq| 2 * d * d * dq == t.len()))
+                    && table_ok(t)
+            })
     }
 
     /// Decodes a synced model, including one written before transition and utility models
     /// existed.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         postcard::from_bytes::<Self>(bytes).ok().or_else(|| {
+            if let Ok(v2) = postcard::from_bytes::<ActionModelV2>(bytes) {
+                return Some(ActionModel {
+                    reward: v2.reward,
+                    effects: v2.effects,
+                    transitions: v2.transitions,
+                    utilities: v2.utilities,
+                    ..Default::default()
+                });
+            }
             let old = postcard::from_bytes::<LegacyActionModel>(bytes).ok()?;
             Some(ActionModel { reward: old.reward, effects: old.effects, ..Default::default() })
         })
     }
+}
+
+/// One gradient step of a conditional table (row-major, `shape`, normalized over slot
+/// `normal`) toward the observed assignment `at`, as [`crate::gradient_step`] does for a factor.
+pub(crate) fn learn_table(table: &mut Vec<f32>, shape: &[usize], at: &[usize], normal: usize, rate: f32) {
+    let Ok(t) = ArrayD::from_shape_vec(IxDyn(shape), std::mem::take(table)) else { return };
+    let mut b = Builder::new("@scratch");
+    let n = shape.len();
+    b.add((0..n).collect(), vec![PatternKind::Condact; n], shape, t.iter().copied().collect(), Some(normal));
+    let inbound: Vec<Vec<f32>> = at.iter().zip(shape).map(|(&x, &d)| crate::one_hot(x, d)).collect();
+    let f = &mut b.factors[0];
+    crate::gradient_step(f, &inbound, rate);
+    *table = f.table.iter().copied().collect();
 }
 
 /// Bounds checks for a perception model received from another device.
@@ -189,6 +252,8 @@ impl LearnedModels {
             .chain(self.effects.keys().map(|(a, _)| a))
             .chain(self.transitions.keys().map(|(a, _)| a))
             .chain(self.utilities.keys().map(|(a, _)| a))
+            .chain(self.q_features.keys().map(|(a, _)| a))
+            .chain(self.contexts.keys().map(|(a, _)| a))
             .cloned()
             .collect()
     }
@@ -197,14 +262,34 @@ impl LearnedModels {
     /// utility models existed.
     pub fn decode(bytes: &[u8]) -> Result<Self, postcard::Error> {
         postcard::from_bytes::<Self>(bytes).or_else(|e| {
+            if let Ok(v2) = postcard::from_bytes::<ModelsV2>(bytes) {
+                return Ok(LearnedModels {
+                    effects: v2.effects,
+                    rewards: v2.rewards,
+                    transitions: v2.transitions,
+                    perceptions: v2.perceptions,
+                    utilities: v2.utilities,
+                    ..Default::default()
+                });
+            }
             let old = postcard::from_bytes::<LegacyModels>(bytes).map_err(|_| e)?;
             Ok(LearnedModels { effects: old.effects, rewards: old.rewards, ..Default::default() })
         })
     }
 
-    /// The backed-up utility of `action` in state `state` (0 until learned).
+    /// The exact-state part of the backed-up utility of `action` in state `state` (0 until
+    /// learned). The whole utility adds the weights of the state's features, see
+    /// [`LearnedModels::q_value`].
     pub fn utility(&self, action: &str, state: &str) -> f32 {
         self.utilities.get(&(action.to_string(), state.to_string())).copied().unwrap_or(0.0)
+    }
+
+    /// The backed-up utility `Q(s, a)` of `action` in the state with key `state` and features
+    /// `features`: its exact-state part plus the weights of the features, so a state never
+    /// seen still gets the utility its features earned elsewhere.
+    pub fn q_value(&self, action: &str, state: &str, features: &[String]) -> f32 {
+        let shared: f32 = features.iter().filter_map(|f| self.q_features.get(&(action.to_string(), f.clone()))).sum();
+        (self.utility(action, state) + shared).clamp(-MAX_Q, MAX_Q)
     }
 
     /// Everything learned about `action`.
@@ -229,6 +314,18 @@ impl LearnedModels {
                 .filter(|((a, _), _)| a == action)
                 .map(|((_, s), q)| (s.clone(), *q))
                 .collect(),
+            features: self
+                .q_features
+                .iter()
+                .filter(|((a, _), _)| a == action)
+                .map(|((_, f), w)| (f.clone(), *w))
+                .collect(),
+            contexts: self
+                .contexts
+                .iter()
+                .filter(|((a, _), _)| a == action)
+                .map(|((_, p), c)| (p.clone(), c.clone()))
+                .collect(),
         }
     }
 
@@ -237,6 +334,8 @@ impl LearnedModels {
         self.effects.retain(|(a, _), _| a != action);
         self.transitions.retain(|(a, _), _| a != action);
         self.utilities.retain(|(a, _), _| a != action);
+        self.q_features.retain(|(a, _), _| a != action);
+        self.contexts.retain(|(a, _), _| a != action);
         self.rewards.remove(action);
         if let Some(t) = model.reward {
             self.rewards.insert(action.to_string(), t);
@@ -249,6 +348,12 @@ impl LearnedModels {
         }
         for (s, q) in model.utilities {
             self.utilities.insert((action.to_string(), s), q);
+        }
+        for (f, w) in model.features {
+            self.q_features.insert((action.to_string(), f), w);
+        }
+        for (p, c) in model.contexts {
+            self.contexts.insert((action.to_string(), p), c);
         }
     }
 }
@@ -517,6 +622,23 @@ impl SigmaEngine {
                 }
                 let (pn, d) = (self.vars[p].schema.name.clone(), self.vars[p].schema.domain_size);
                 let next = self.internal_var(&transition_name(&pn, &an), d)?;
+                // Structure learning found a second predicate the transition depends on: the
+                // model conditions on it too, [action, p now, parent now, p next].
+                if let Some((parent, t)) = self.models.contexts.get(&(an.clone(), pn.clone())) {
+                    if let Some(q) = self.visible(parent).filter(|&q| self.vars[q].range.is_none()) {
+                        let dq = self.vars[q].schema.domain_size;
+                        if t.len() == 2 * d * dq * d {
+                            let kinds = vec![
+                                PatternKind::Condition,
+                                PatternKind::Condition,
+                                PatternKind::Condition,
+                                PatternKind::Condact,
+                            ];
+                            b.add(vec![a, p, q, next], kinds, &[2, d, dq, d], t.clone(), Some(3));
+                            continue;
+                        }
+                    }
+                }
                 let values = match self.models.transitions.get(&(an.clone(), pn.clone())) {
                     Some(t) if t.len() == 2 * d * d => t.clone(),
                     _ => vec![1.0 / d as f32; 2 * d * d],
@@ -542,17 +664,19 @@ impl SigmaEngine {
     }
 
     /// Backed-up utilities of the current state: a factor `[1, exp(Q(s, a))]` on each action
-    /// with a learned utility here.
+    /// with a utility here (learned for this state, or carried by its features).
     fn utility_factors(&mut self) -> Option<Builder> {
         let state = self.state_key();
+        let features = self.q_features();
         let mut b = Builder::new(UTILITY_SKILL);
         for v in 0..self.vars.len() {
             let s = &self.vars[v].schema;
             if s.role != PredicateRole::Action || internal(&s.name) {
                 continue;
             }
-            if let Some(&q) = self.models.utilities.get(&(s.name.clone(), state.clone())) {
-                b.add(vec![v], vec![PatternKind::Condact], &[2], vec![1.0, q.clamp(-MAX_Q, MAX_Q).exp()], None);
+            let q = self.models.q_value(&s.name, &state, &features);
+            if q != 0.0 {
+                b.add(vec![v], vec![PatternKind::Condact], &[2], vec![1.0, q.exp()], None);
             }
         }
         (!b.factors.is_empty()).then_some(b)
@@ -615,7 +739,7 @@ impl SigmaEngine {
     }
 
     /// Copies the model factors' learned tables back into [`LearnedModels`].
-    fn save_models(&mut self) {
+    pub(crate) fn save_models(&mut self) {
         let mut models = std::mem::take(&mut self.models);
         for f in self.factors.iter().filter(|f| f.memory && f.skill.skill_name == MODEL_SKILL) {
             let a = self.vars[f.vars[0]].schema.name.clone();
@@ -625,6 +749,11 @@ impl SigmaEngine {
                 models.rewards.insert(a, table);
             } else if let Some(p) = target.strip_prefix("@Next(").and_then(|t| t.split('|').next()) {
                 models.effects.insert((a, p.to_string()), table);
+            } else if target.starts_with("@Trans(") && f.vars.len() == 4 {
+                let key = (a, self.vars[f.vars[1]].schema.name.clone());
+                if let Some((_, t)) = models.contexts.get_mut(&key) {
+                    *t = table;
+                }
             } else if target.starts_with("@Trans(") {
                 // Saved only once learned, so untouched (uniform) transitions are not synced.
                 let key = (a, self.vars[f.vars[1]].schema.name.clone());
@@ -663,10 +792,32 @@ impl SigmaEngine {
                     continue;
                 }
                 let d = f.table.shape()[1];
+                let key = (self.vars[action].schema.name.clone(), self.vars[p].schema.name.clone());
+                if f.vars.len() == 4 {
+                    // Conditioned on a parent too: learns from the parent's value then.
+                    let q = f.vars[2];
+                    let dq = f.table.shape()[2];
+                    if let Some(xq) = before.get(q).copied().flatten() {
+                        let inbound = vec![
+                            crate::one_hot(1, 2),
+                            crate::one_hot(x0, d),
+                            crate::one_hot(xq, dq),
+                            crate::one_hot(x, d),
+                        ];
+                        crate::gradient_step(&mut self.factors[fi], &inbound, rate);
+                    }
+                    // The plain transition model keeps learning beside it.
+                    let mut plain =
+                        self.models.transitions.get(&key).cloned().unwrap_or_else(|| vec![1.0 / d as f32; 2 * d * d]);
+                    if plain.len() == 2 * d * d {
+                        learn_table(&mut plain, &[2, d, d], &[1, x0, x], 2, rate);
+                        self.models.transitions.insert(key, plain);
+                    }
+                    continue;
+                }
                 let inbound = vec![crate::one_hot(1, 2), crate::one_hot(x0, d), crate::one_hot(x, d)];
                 crate::gradient_step(&mut self.factors[fi], &inbound, rate);
                 let f = &self.factors[fi];
-                let key = (self.vars[action].schema.name.clone(), self.vars[p].schema.name.clone());
                 self.models.transitions.insert(key, f.table.iter().copied().collect());
                 continue;
             }
@@ -701,33 +852,6 @@ impl SigmaEngine {
             crate::gradient_step(&mut self.factors[fi], &inbound, MODEL_RATE);
         }
         self.save_models();
-    }
-
-    /// One temporal-difference backup of `Q(state, action)` after `reward`, now that the
-    /// agent is in the state working memory describes (terminal when no goal is left).
-    pub(crate) fn back_up_utility(&mut self, state: &str, action: usize, reward: f32) {
-        let an = self.vars[action].schema.name.clone();
-        let next = self.state_key();
-        let future = if self.goal_stack.is_empty() {
-            0.0
-        } else {
-            self.models.utilities.iter().filter(|((_, s), _)| *s == next).map(|(_, &q)| q).fold(0.0, f32::max)
-        };
-        let key = (an.clone(), state.to_string());
-        let q = self.models.utilities.get(&key).copied().unwrap_or(0.0);
-        let updated = (q + Q_RATE * (reward + Q_DISCOUNT * future - q)).clamp(-MAX_Q, MAX_Q);
-        if updated == 0.0 && q == 0.0 {
-            return;
-        }
-        let per_action = self.models.utilities.keys().filter(|(a, _)| *a == an).count();
-        if self.models.utilities.contains_key(&key) || per_action < MAX_Q_STATES {
-            self.models.utilities.insert(key, updated);
-        }
-    }
-
-    /// The backed-up utility of `action` in the current state.
-    pub(crate) fn utility(&self, action: usize) -> f32 {
-        self.models.utility(&self.vars[action].schema.name, &self.state_key())
     }
 
     /// Adopts a perception model learned on another of the user's devices.

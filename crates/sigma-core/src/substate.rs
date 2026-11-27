@@ -529,20 +529,31 @@ impl SigmaEngine {
             let (q, q0) = (t[3] / (t[2] + t[3]), t[1] / (t[0] + t[1]));
             q > SUBGOAL_PROMOTION && q - q0 >= TIE_MARGIN
         };
-        // A transition model, read at the (sub)goal's current value: binary, [a, g, @Trans].
+        // A transition model, read at the (sub)goal's current value (and its parent's, for a
+        // context-conditioned one): binary, [a, g, @Trans] or [a, g, parent, @Trans].
         let transition = |f: &crate::FactorNode, a: usize| {
             let an = &self.vars[a].schema.name;
-            if f.vars.len() != 3 || f.vars[0] != a || f.table.len() != 8 {
+            let n = f.vars.len();
+            if !(n == 3 || n == 4) || f.vars[0] != a || f.table.shape()[1] != 2 {
                 return false;
             }
             let g = &self.vars[f.vars[1]].schema.name;
-            if !open.contains(&g) || self.vars[f.vars[2]].schema.name != transition_name(g, an) {
+            if !open.contains(&g) || self.vars[f.vars[n - 1]].schema.name != transition_name(g, an) {
                 return false;
             }
             let Some(x0) = self.vars[f.vars[1]].evidence else { return false };
-            let t: Vec<f32> = f.table.iter().copied().collect();
-            let row = 4 + 2 * x0; // action taken, current value x0
-            t[row + 1] / (t[row] + t[row + 1]) > SUBGOAL_PROMOTION
+            // Row of: action taken, current value x0, and the parent's current value.
+            let row = if n == 3 {
+                [1, x0, 0]
+            } else {
+                let Some(xq) = self.vars[f.vars[2]].evidence else { return false };
+                [1, x0, xq]
+            };
+            let at = |y: usize| {
+                let idx: Vec<usize> = row[..n - 1].iter().copied().chain([y]).collect();
+                f.table[idx.as_slice()]
+            };
+            at(1) / (at(0) + at(1)) > SUBGOAL_PROMOTION
         };
         (0..self.vars.len())
             .filter(|&a| self.vars[a].schema.role == PredicateRole::Action)

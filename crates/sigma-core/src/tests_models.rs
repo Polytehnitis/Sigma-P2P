@@ -146,11 +146,20 @@ fn utilities_are_backed_up_from_later_rewards() {
         engine.goal_stack.clear();
         engine.cognitive_cycle(); // terminal: backs up B's reward
     }
-    let (qa, qb) = (engine.models.utility("A", &s0), engine.models.utility("B", &s1));
+    let q = |e: &SigmaEngine, a: &str, stage: usize| {
+        let mut e = e.hypothetical();
+        e.models = engine.models.clone();
+        e.goal_stack = vec!["G".into()];
+        e.set_evidence("Stage", stage).unwrap();
+        e.q_value(a)
+    };
+    let (qa, qb) = (q(&engine, "A", 0), q(&engine, "B", 1));
     // B earned the reward directly; A, never rewarded itself, earned its discounted value.
     assert!(qb > 0.5, "Q(s1, B) = {qb}");
     assert!(qa > 0.05 && qa < qb, "Q(s0, A) = {qa}");
+    // B was never taken at stage 0, so no exact-state utility was learned for it there.
     assert_eq!(engine.models.utility("B", &s0), 0.0);
+    assert!(engine.models.utility("B", &s1) > 0.0);
 
     // In the graph, the backed-up utility raises A's posterior at stage 0.
     let ia = engine.index["A"];
