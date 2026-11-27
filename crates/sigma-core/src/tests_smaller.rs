@@ -120,6 +120,59 @@ fn continuous_arguments_are_read_and_written_between_regions() {
 }
 
 #[test]
+fn fields_over_several_arguments_interpolate_bilinearly() {
+    let id = NodeIdentity::generate();
+    // P(Heat(x, y)) = (x + y) / 20 over a 5 × 5 grid of regions.
+    let program = Program {
+        types: vec![TypeDef::continuous("position", 0.0, 10.0, 5)],
+        predicates: vec![PredicateDef {
+            name: "Heat".into(),
+            role: Context,
+            args: vec!["position".into(), "position".into()],
+            value_type: None,
+        }],
+        conditionals: vec![Conditional {
+            name: "rising".into(),
+            patterns: vec![Pattern {
+                kind: PatternKind::Condact,
+                predicate: "Heat".into(),
+                args: vec![Term::Var("x".into()), Term::Var("y".into())],
+            }],
+            function_vars: vec!["x".into(), "y".into()],
+            function: Function::PiecewiseLinear {
+                default: 0.0,
+                pieces: vec![
+                    Piece { lo: vec![0.0, 0.0, 0.0], hi: vec![10.0, 10.0, 1.0], coef: vec![20.0, -1.0, -1.0, 0.0] },
+                    Piece { lo: vec![0.0, 0.0, 1.0], hi: vec![10.0, 10.0, 2.0], coef: vec![0.0, 1.0, 1.0, 0.0] },
+                ],
+            },
+            learnable: false,
+            normal: None,
+        }],
+    };
+    let mut engine = SigmaEngine::new();
+    engine.compile_skill(signed_program(&id, "plane", program)).unwrap();
+    let at = |e: &SigmaEngine, x: f32, y: f32| e.value_at_point("Heat", &[x, y]).unwrap();
+    // A linear field is read exactly between the region midpoints, in both arguments.
+    for (x, y) in [(3.0, 5.0), (3.1, 6.4), (4.0, 4.0), (8.9, 1.2)] {
+        assert!((at(&engine, x, y) - (x + y) / 20.0).abs() < 1e-3, "({x}, {y}): {}", at(&engine, x, y));
+    }
+    assert!((at(&engine, 0.2, 9.9) - (1.0 + 9.0) / 20.0).abs() < 1e-3, "clamped to the outer midpoints");
+    assert!(engine.value_at_point("Heat", &[1.0]).is_none(), "wrong number of arguments");
+    // A percept at a point goes to the four regions around it, tempered by their weights.
+    engine.perceive_at_point("Heat", &[4.0, 6.0], &[0.0, 1.0]).unwrap();
+    for atom in ["Heat(2,4)", "Heat(4,4)", "Heat(2,6)", "Heat(4,6)"] {
+        let p = engine.posterior(atom).unwrap()[1];
+        let prior = {
+            let args: Vec<f32> = atom[5..atom.len() - 1].split(',').map(|a| a.parse::<f32>().unwrap() + 1.0).collect();
+            (args[0] + args[1]) / 20.0
+        };
+        assert!(p > prior + 0.05, "{atom}: {p} vs {prior}");
+    }
+    assert!((engine.posterior("Heat(8,8)").unwrap()[1] - 0.9).abs() < 1e-3, "untouched");
+}
+
+#[test]
 fn max_product_takes_the_exact_envelope_between_slices() {
     // f(x, y) = y for x < 0.5 and 1 - y for x >= 0.5; max over x is max(y, 1 - y).
     let f = Plm { bounds: vec![vec![0.0, 0.5, 1.0], vec![0.0, 1.0]], coef: vec![0.0, 0.0, 1.0, 1.0, 0.0, -1.0] };
