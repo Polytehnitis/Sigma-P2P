@@ -15,7 +15,7 @@
 //! impasse goes away or changes (other goal, other candidates, other kind), every lower state
 //! is deleted.
 
-use crate::graph_memory::{next_name, REWARD_WEIGHT};
+use crate::graph_memory::{next_name, transition_name, Q_WEIGHT, REWARD_WEIGHT};
 use crate::{ImpasseKind, PatternKind, PredicateRole, SigmaEngine, SUBGOAL_PROMOTION, TIE_MARGIN};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -100,8 +100,19 @@ impl SigmaEngine {
             .filter(|&v| self.vars[v].schema.role == PredicateRole::Goal)
             .collect();
 
-        // Elaboration 1: which subgoal states do the active goals call for?
-        let p1 = self.infer(|v| if stacked.contains(&v) { Some(1) } else { None });
+        // Elaboration 1: which subgoal states do the active goals call for? A subgoal observed
+        // false is still needed, so its observation does not hide the need.
+        let goals = |v: usize| if stacked.contains(&v) { Some(1) } else { None };
+        let observed_false: Vec<usize> = (0..self.vars.len())
+            .filter(|&v| self.vars[v].schema.role == PredicateRole::Subgoal && self.vars[v].evidence == Some(0))
+            .collect();
+        let p1 = if observed_false.is_empty() {
+            self.infer(goals)
+        } else {
+            let mut needs = self.hypothetical();
+            observed_false.iter().for_each(|&v| needs.vars[v].evidence = None);
+            needs.infer(goals)
+        };
         let (_, chain) = self.reachable(root);
         for v in chain {
             let s = &self.vars[v].schema;
@@ -212,8 +223,9 @@ impl SigmaEngine {
                 } else {
                     state.imagine(a, root, candidates, horizon, 1, &[], &mut search)
                 };
-                // Reinforcement learning: the reward model's advantage for the action.
-                (a, (v + REWARD_WEIGHT * self.reward_advantage(a)).max(0.0))
+                // Reinforcement learning: the reward model's advantage for the action, and its
+                // backed-up utility in this state.
+                (a, (v + REWARD_WEIGHT * self.reward_advantage(a) + Q_WEIGHT * self.utility(a)).max(0.0))
             })
             .collect();
         evaluations.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -356,10 +368,20 @@ impl SigmaEngine {
             let v = self.index[g];
             let (p, idle) = if goals.contains(&v) { (&top, &top_idle) } else { (&sub, &sub_idle) };
             let (mut q, mut q0) = (p[v].get(1).copied().unwrap_or(0.0), idle[v].get(1).copied().unwrap_or(0.0));
-            // The learned action model's prediction, where it says more.
-            if let Some(&m) = self.index.get(&next_name(g, &self.vars[action].schema.name)) {
+            // The learned action and transition models' predictions, where they say more. The
+            // transition model reads the predicate's current value; doing nothing leaves it.
+            let an = &self.vars[action].schema.name;
+            if let Some(&m) = self.index.get(&next_name(g, an)) {
                 let (mq, mq0) = (sub[m].get(1).copied().unwrap_or(0.0), sub_idle[m].get(1).copied().unwrap_or(0.0));
                 if mq - mq0 > q - q0 {
+                    (q, q0) = (mq, mq0);
+                }
+            }
+            if let Some(&m) = self.index.get(&transition_name(g, an)) {
+                let mq = sub[m].get(1).copied().unwrap_or(0.0);
+                let mq0 = if self.satisfied(v) { 1.0 } else { 0.0 };
+                // An unlearned (uniform) transition model never passes this.
+                if mq > SUBGOAL_PROMOTION && mq - mq0 > q - q0 {
                     (q, q0) = (mq, mq0);
                 }
             }
@@ -414,9 +436,24 @@ impl SigmaEngine {
             let (q, q0) = (t[3] / (t[2] + t[3]), t[1] / (t[0] + t[1]));
             q > SUBGOAL_PROMOTION && q - q0 >= TIE_MARGIN
         };
+        // A transition model, read at the (sub)goal's current value: binary, [a, g, @Trans].
+        let transition = |f: &crate::FactorNode, a: usize| {
+            let an = &self.vars[a].schema.name;
+            if f.vars.len() != 3 || f.vars[0] != a || f.table.len() != 8 {
+                return false;
+            }
+            let g = &self.vars[f.vars[1]].schema.name;
+            if !open.contains(&g) || self.vars[f.vars[2]].schema.name != transition_name(g, an) {
+                return false;
+            }
+            let Some(x0) = self.vars[f.vars[1]].evidence else { return false };
+            let t: Vec<f32> = f.table.iter().copied().collect();
+            let row = 4 + 2 * x0; // action taken, current value x0
+            t[row + 1] / (t[row] + t[row + 1]) > SUBGOAL_PROMOTION
+        };
         (0..self.vars.len())
             .filter(|&a| self.vars[a].schema.role == PredicateRole::Action)
-            .filter(|&a| self.memory_factors().iter().any(|f| effective(f, a)))
+            .filter(|&a| self.memory_factors().iter().any(|f| effective(f, a) || transition(f, a)))
             .collect()
     }
 

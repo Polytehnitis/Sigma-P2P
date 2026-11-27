@@ -3,7 +3,7 @@
 //! Every local write of replicated state also stamps a register in the `sync` table, so the
 //! store can hand its whole [`SyncState`] to the user's other devices and merge theirs back.
 
-use crate::graph_memory::{ActionModel, LearnedModels};
+use crate::graph_memory::{self, ActionModel, LearnedModels};
 use crate::sync::{keys, next_clock, Register, Stamp, SyncReport, SyncState};
 use crate::{
     crypto, language, ActionManifest, EpisodicMemory, NodeIdentity, PredicateSchema, SemanticMemory, SigmaEngine,
@@ -183,6 +183,9 @@ impl FactorStore {
                 let bytes = postcard::to_allocvec(&engine.models.action_model(&action))?;
                 stamp(tx, &keys::model(&action), Some(bytes))?;
             }
+            for ((obs, state), table) in &engine.models.perceptions {
+                stamp(tx, &keys::perception(obs, state), Some(postcard::to_allocvec(table)?))?;
+            }
             Ok(())
         })
     }
@@ -311,9 +314,17 @@ impl FactorStore {
                 let tx = self.db.begin_read()?;
                 let row = tx.open_table(SYNC)?.get(key.as_str())?.map(|g| g.value().to_vec());
                 let register = row.map(|b| postcard::from_bytes::<Register>(&b)).transpose()?;
-                let model = register.and_then(|r| r.value).and_then(|v| postcard::from_bytes::<ActionModel>(&v).ok());
+                let model = register.and_then(|r| r.value).and_then(|v| ActionModel::decode(&v));
                 if let Some(model) = model {
                     engine.adopt_action_model(action, model);
+                }
+            } else if let Some((obs, state)) = key.strip_prefix(keys::PERCEPTION).and_then(keys::perception_pair) {
+                let tx = self.db.begin_read()?;
+                let row = tx.open_table(SYNC)?.get(key.as_str())?.map(|g| g.value().to_vec());
+                let register = row.map(|b| postcard::from_bytes::<Register>(&b)).transpose()?;
+                let table = register.and_then(|r| r.value).and_then(|v| postcard::from_bytes::<Vec<f32>>(&v).ok());
+                if let Some(table) = table {
+                    engine.adopt_perception_model(&obs, &state, table);
                 }
             }
         }
@@ -342,7 +353,7 @@ impl FactorStore {
             engine.semantic = postcard::from_bytes(g.value())?;
         }
         if let Some(g) = memories.get("models")? {
-            engine.models = postcard::from_bytes(g.value())?;
+            engine.models = LearnedModels::decode(g.value())?;
         }
         let mut rows = Vec::new();
         for row in tx.open_table(SKILLS)?.iter()? {
@@ -495,13 +506,28 @@ fn apply_register(tx: &WriteTransaction, key: &str, value: Option<&[u8]>, own: &
         }
     } else if let Some(action) = key.strip_prefix(keys::MODEL) {
         // Validated before it reaches the stored models (and, through them, the graph).
-        let model = value.map(postcard::from_bytes::<ActionModel>).transpose().ok().flatten();
+        let model = value.and_then(ActionModel::decode);
         if let Some(model) = model.filter(|m| m.is_valid() && !action.is_empty()) {
             let mut t = tx.open_table(MEMORIES)?;
-            let stored = t.get("models")?.map(|g| postcard::from_bytes::<LearnedModels>(g.value())).transpose()?;
+            let stored = t.get("models")?.map(|g| LearnedModels::decode(g.value())).transpose()?;
             let mut models = stored.unwrap_or_default();
             models.set_action_model(action, model);
             t.insert("models", postcard::to_allocvec(&models)?.as_slice())?;
+        }
+    } else if let Some(pair) = key.strip_prefix(keys::PERCEPTION) {
+        let table = value.and_then(|v| postcard::from_bytes::<Vec<f32>>(v).ok());
+        if let (Some((obs, state)), Some(table)) = (keys::perception_pair(pair), table) {
+            if graph_memory::perception_is_valid(&table) {
+                let mut t = tx.open_table(MEMORIES)?;
+                let stored = t.get("models")?.map(|g| LearnedModels::decode(g.value())).transpose()?;
+                let mut models = stored.unwrap_or_default();
+                if models.perceptions.len() < graph_memory::MAX_PERCEPTION_MODELS
+                    || models.perceptions.contains_key(&(obs.clone(), state.clone()))
+                {
+                    models.perceptions.insert((obs, state), table);
+                    t.insert("models", postcard::to_allocvec(&models)?.as_slice())?;
+                }
+            }
         }
     } else if let Some(hex) = key.strip_prefix(keys::DEVICE) {
         if let (Ok(pk), Some(_)) = (crypto::pubkey_from_hex(hex), value) {
