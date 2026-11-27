@@ -112,13 +112,15 @@ pub enum DecisionImpasseKind {
     Tie,
     /// The same action again while nothing changed.
     NoChange,
+    /// The best action is both strongly supported and strongly opposed.
+    Conflict,
 }
 
 pub struct DecisionImpasse {
     pub kind: DecisionImpasseKind,
     pub goal: String,
     pub candidates: Vec<String>,
-    /// Reflective lookahead settled it.
+    /// Reasoning in a substate (or episodic recall) settled it.
     pub resolved: bool,
     pub cycles: u32,
 }
@@ -276,6 +278,7 @@ pub fn run_cognitive_step(evidence: Vec<Evidence>, active_goals: Vec<String>) ->
                 ImpasseKind::None => DecisionImpasseKind::NoCandidates,
                 ImpasseKind::Tie => DecisionImpasseKind::Tie,
                 ImpasseKind::NoChange => DecisionImpasseKind::NoChange,
+                ImpasseKind::Conflict => DecisionImpasseKind::Conflict,
             },
             goal: d.goal,
             candidates: d.candidates,

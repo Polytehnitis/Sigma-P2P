@@ -262,6 +262,11 @@ impl SigmaEngine {
 }
 
 impl ExactState {
+    /// The mass that factor `fi`'s message to its slot `s` puts on value `x` (discrete).
+    pub(crate) fn message_mass(&self, fi: usize, s: usize, x: usize) -> f32 {
+        self.msgs[fi][s].moments(x as f64, x as f64 + 1.0).0 as f32
+    }
+
     /// Prior times every incoming message except `skip` (a factor and slot).
     pub(crate) fn belief(&self, e: &SigmaEngine, v: usize, skip: Option<(usize, usize)>) -> Belief {
         let mut b = match &self.prior[v] {

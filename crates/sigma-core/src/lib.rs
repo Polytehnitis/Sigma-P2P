@@ -19,6 +19,7 @@ pub mod particles;
 pub mod plm;
 pub mod program;
 pub mod storage;
+pub mod substate;
 pub mod sync;
 
 use ndarray::{ArrayD, Dimension, IxDyn};
@@ -37,6 +38,7 @@ pub use program::{
     TypeKind,
 };
 pub use storage::FactorStore;
+pub use substate::Substate;
 pub use sync::{SyncReport, SyncState};
 
 /// Largest factor value a skill may carry.
@@ -172,6 +174,9 @@ pub enum ImpasseKind {
     Tie,
     /// The same action was selected again while working memory did not change.
     NoChange,
+    /// The best candidate is both strongly supported and strongly opposed by different
+    /// factors (Sigma's operator that is both accepted and rejected).
+    Conflict,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -180,7 +185,7 @@ pub struct DecisionImpasse {
     /// The (sub)goal on top of the stack when the impasse arose.
     pub goal: String,
     pub candidates: Vec<String>,
-    /// True when reflective processing inside the impasse (one-step lookahead) settled it.
+    /// True when reasoning in a substate (or, for a none impasse, episodic recall) settled it.
     pub resolved: bool,
     /// Consecutive cycles this kind of impasse has persisted.
     pub cycles: u32,
@@ -196,8 +201,11 @@ pub struct CycleOutcome {
     pub provenance: Vec<(String, [u8; 32])>,
     /// Structural impasse (missing skill), broadcast to peers.
     pub impasse: Option<ImpasseEvent>,
-    /// Decision impasse (none, tie or no-change) from this cycle's decision phase.
+    /// Decision impasse (none, tie, conflict or no-change) from this cycle's decision phase.
     pub decision_impasse: Option<DecisionImpasse>,
+    /// The substate that reasoned about this cycle's impasse: settled (with its `result`) or
+    /// still open on the state stack (see `SigmaEngine::substates`).
+    pub substate: Option<Substate>,
     pub appraisal: Appraisal,
     /// Skills that took part in elaboration, when an attention budget is set.
     pub attended_skills: Vec<String>,
@@ -279,6 +287,8 @@ pub struct SigmaEngine {
     pub confirm_unlisted_actions: bool,
     /// Action specs, the undo stack and the action awaiting confirmation.
     safety: actions::ActionSafety,
+    /// The state stack below the top state: substates still reasoning about an impasse.
+    substates: Vec<Substate>,
 }
 
 impl SigmaEngine {
@@ -592,6 +602,7 @@ impl SigmaEngine {
         let Some(root) = self.goal_stack.first().and_then(|g| self.index.get(g)).copied() else {
             self.trace = None;
             self.last = None;
+            self.substates.clear();
             self.percepts.clear();
             self.particle_percepts.clear();
             self.appraisal = appraisal.label(false);
@@ -599,67 +610,14 @@ impl SigmaEngine {
         };
         self.complete_from_semantic_memory();
         self.attended = self.attend(&surprise);
-        let stacked_goals: HashSet<usize> = self
-            .goal_stack
-            .iter()
-            .filter_map(|g| self.index.get(g).copied())
-            .filter(|&v| self.vars[v].schema.role == PredicateRole::Goal)
-            .collect();
-
-        // Elaboration 1: which subgoal states do the active goals call for?
-        let p1 = self.infer(|v| if stacked_goals.contains(&v) { Some(1) } else { None });
-        let (_, chain) = self.reachable(root);
-        for v in chain {
-            let s = &self.vars[v].schema;
-            if s.role == PredicateRole::Subgoal
-                && !self.satisfied(v)
-                && p1[v].get(1).is_some_and(|&p| p > SUBGOAL_PROMOTION)
-                && !self.goal_stack.contains(&s.name)
-            {
-                self.goal_stack.push(s.name.clone());
-            }
-        }
-
-        // Elaboration 2: action posteriors for the deepest open (sub)goal.
-        let p2 = self.infer(|v| match self.vars[v].schema.role {
-            _ if stacked_goals.contains(&v) => Some(1),
-            PredicateRole::Subgoal => Some(0),
-            _ => None,
-        });
-        let top = self.index[self.goal_stack.last().expect("root is on the stack")];
-        let (top_factors, candidates) = self.reachable(top);
-        let mut ranked: Vec<(usize, f32)> = candidates
-            .into_iter()
-            .filter(|&v| self.vars[v].schema.role == PredicateRole::Action)
-            .filter_map(|v| p2[v].get(1).map(|&p| (v, p)))
-            .filter(|&(_, p)| p > 0.5)
-            .collect();
-        ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
-        let tied: Vec<usize> = ranked.iter().take_while(|c| ranked[0].1 - c.1 < TIE_MARGIN).map(|c| c.0).collect();
-
-        // Decision.
-        let (selected, mut impasse) = match tied.len() {
-            // None impasse: fall back on a rewarded action from a similar episode.
-            0 => match self.recall_action() {
-                Some(a) => (Some(a), Some((ImpasseKind::None, vec![a], true))),
-                None => (None, Some((ImpasseKind::None, Vec::new(), false))),
-            },
-            1 => (Some(tied[0]), None),
-            _ => {
-                // Tie impasse: reflect by looking one step ahead with each candidate.
-                let mut scored: Vec<(usize, f32)> =
-                    tied.iter().map(|&a| (a, self.lookahead(a, top, &tied, &stacked_goals))).collect();
-                scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-                let resolved = scored[0].1 - scored[1].1 >= TIE_MARGIN;
-                (resolved.then_some(scored[0].0), Some((ImpasseKind::Tie, tied.clone(), resolved)))
-            }
-        };
+        let elaboration = self.elaborate(root);
         let wm: Vec<Option<usize>> = self.vars.iter().map(|n| n.evidence).collect();
-        if let (None, Some(last)) = (&impasse, &self.last) {
-            if selected.is_some() && last.action == selected && last.wm == wm && last.goals == self.goal_stack {
-                impasse = Some((ImpasseKind::NoChange, selected.into_iter().collect(), false));
-            }
-        }
+        let last = self.last.as_ref().map(|l| (l.action, l.wm.clone(), l.goals.clone()));
+        let goals = self.goal_stack.clone();
+        let repeats =
+            |a: usize| last.as_ref().is_some_and(|(action, w, g)| *action == Some(a) && *w == wm && *g == goals);
+        let substate::Decision { selected, impasse, substate } = self.decide(&elaboration, repeats);
+        let substate::Elaboration { p1, p2, top, top_factors, .. } = elaboration;
         let decision_impasse = impasse.map(|(kind, cands, resolved)| DecisionImpasse {
             kind,
             goal: self.vars[top].schema.name.clone(),
@@ -725,6 +683,7 @@ impl SigmaEngine {
                 .collect(),
             impasse: self.detect_structural_impasse(),
             decision_impasse,
+            substate,
             awaiting_confirmation: None,
         };
         self.trace = Some(Trace { factors: active, marginals });
@@ -776,19 +735,6 @@ impl SigmaEngine {
         let ok = |e: &Episode| e.reward > 0.0 && e.action.as_deref().is_some_and(|a| is_action(a).is_some());
         let recall = self.episodic.recall(&self.goal_stack, &self.working_memory(), ok)?;
         is_action(recall.episode.action.as_deref()?).copied()
-    }
-
-    /// Reflection inside a tie impasse: how likely is `top` to hold if `action` is taken
-    /// (and the other tied candidates are not)?
-    fn lookahead(&self, action: usize, top: usize, tied: &[usize], stacked: &HashSet<usize>) -> f32 {
-        let p = self.infer(|v| match self.vars[v].schema.role {
-            _ if v == top => None,
-            _ if tied.contains(&v) => Some(usize::from(v == action)),
-            _ if stacked.contains(&v) => Some(1),
-            PredicateRole::Subgoal => Some(0),
-            _ => None,
-        });
-        p[top].get(1).copied().unwrap_or(0.0)
     }
 
     /// Walks the chain from the root goal; reports the first open (sub)goal with no
@@ -1157,6 +1103,8 @@ mod tests_memory;
 mod tests_mind;
 #[cfg(test)]
 mod tests_particles;
+#[cfg(test)]
+mod tests_substates;
 #[cfg(test)]
 mod tests_sync;
 #[cfg(test)]

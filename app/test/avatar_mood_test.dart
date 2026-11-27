@@ -112,6 +112,23 @@ void main() {
     expect(m.bubble, contains('sort papers'));
   });
 
+  test('an open conflict ponders the contested action', () {
+    final m = AvatarMood.of(
+      step(
+        decision: const DecisionImpasse(
+          kind: DecisionImpasseKind.conflict,
+          goal: 'GoalTidyDesk',
+          candidates: ['ActionSortPapers'],
+          resolved: false,
+          cycles: 1,
+        ),
+      ),
+      online: true,
+    );
+    expect(m.gesture, Gesture.ponder);
+    expect(m.bubble, contains('sort papers'));
+  });
+
   test('no candidate actions asks to be taught the goal', () {
     final m = AvatarMood.of(
       step(
