@@ -166,3 +166,61 @@ fn none_impasses_search_the_actions_connected_to_the_goal() {
     }
     assert_eq!(picked.as_deref(), Some("A"));
 }
+
+/// [`two_step`], with a context predicate `Sunny` linked to `Ready` (it does not matter to the
+/// choice, but it is part of the situation).
+fn two_step_sunny(id: &NodeIdentity, sunny: usize) -> SigmaEngine {
+    let mut engine = two_step(id);
+    let weather = signed(id, "weather", vec![bin("Ready", Subgoal), bin("Sunny", Context)], vec![1.0; 4]);
+    engine.compile_skill(weather).unwrap();
+    engine.set_evidence("Sunny", sunny).unwrap();
+    engine
+}
+
+#[test]
+fn settled_substates_are_chunked_into_signed_rules() {
+    let id = NodeIdentity::generate();
+    let mut engine = two_step_sunny(&id, 1);
+    engine.chunk_author = Some(id.clone());
+    assert!(engine.cognitive_cycle().chunk.is_none(), "nothing settled yet");
+    let out = engine.cognitive_cycle();
+    assert_eq!(out.selected_action.as_deref(), Some("A"));
+    let chunk = out.chunk.expect("the settled tie is chunked");
+    assert!(chunk.skill_name.starts_with(crate::substate::CHUNK_PREFIX));
+    assert_eq!(chunk.validate(), Ok(()));
+    assert_eq!(chunk.author_pubkey, id.author_pubkey());
+    let names: Vec<&str> = chunk.predicates.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["Ready", "Sunny", "A"]);
+    // Its strong entry is the situation: Ready still open, Sunny observed, A taken.
+    assert_eq!(chunk.factor_values[0b011], crate::substate::CHUNK_WEIGHT);
+
+    // Next time the same situation is decided at once: no impasse, no substate.
+    engine.goal_stack = vec!["G".into()];
+    engine.cognitive_cycle(); // compiles the chunk; pushes Ready
+    assert!(engine.export_skill(&chunk.skill_name).is_some());
+    let mut fresh = two_step_sunny(&id, 1);
+    fresh.compile_skill(chunk.clone()).unwrap();
+    let out = fresh.cognitive_cycle();
+    assert_eq!(out.selected_action.as_deref(), Some("A"));
+    assert_eq!(out.decision_impasse, None);
+    assert!(out.chunk.is_none());
+
+    // In another situation the chunk does not apply, and the tie is reasoned about again.
+    let mut other = two_step_sunny(&id, 0);
+    other.compile_skill(chunk).unwrap();
+    assert_eq!(other.cognitive_cycle().decision_impasse.map(|d| d.kind), Some(ImpasseKind::Tie));
+}
+
+#[test]
+fn chunks_without_an_author_are_proposed_unsigned() {
+    let id = NodeIdentity::generate();
+    let mut engine = two_step_sunny(&id, 1);
+    engine.cognitive_cycle();
+    let chunk = engine.cognitive_cycle().chunk.expect("proposed");
+    assert!(chunk.validate().is_err(), "unsigned");
+    let mut fresh = two_step_sunny(&id, 1);
+    let signed_chunk = fresh.learn_chunk(&id, chunk).unwrap();
+    assert_eq!(signed_chunk.validate(), Ok(()));
+    assert_eq!(fresh.cognitive_cycle().decision_impasse, None);
+    assert!(fresh.learn_chunk(&id, crate::tests::skill_sync(&id)).is_err(), "only chunks");
+}

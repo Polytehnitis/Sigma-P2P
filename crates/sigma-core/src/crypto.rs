@@ -7,6 +7,13 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 #[derive(Clone)]
 pub struct NodeIdentity(SigningKey);
 
+impl std::fmt::Debug for NodeIdentity {
+    /// Shows the public key only, never the secret.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NodeIdentity({})", to_hex(&self.author_pubkey()))
+    }
+}
+
 impl NodeIdentity {
     pub fn generate() -> Self {
         Self(SigningKey::generate(&mut rand::rngs::OsRng))

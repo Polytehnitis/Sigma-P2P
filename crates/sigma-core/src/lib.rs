@@ -233,6 +233,10 @@ pub struct CycleOutcome {
     /// The selected action needs the user's confirmation: it is held here instead of
     /// entering the motor buffer (see [`ConfirmationGate`]).
     pub awaiting_confirmation: Option<PendingAction>,
+    /// The chunk a substate's result was compiled into this cycle (see [`SigmaEngine::chunk`]):
+    /// signed and compiled when `chunk_author` is set, else unsigned, for the host to adopt
+    /// with [`SigmaEngine::learn_chunk`].
+    pub chunk: Option<SkillPackage>,
 }
 
 /// A particle message over a continuous predicate: weighted samples of its value.
@@ -316,6 +320,11 @@ pub struct SigmaEngine {
     pub models: LearnedModels,
     /// The concepts `@Category` ranges over, in slot order.
     category_names: Vec<String>,
+    /// Chunking: when set, what a substate concludes is compiled at once into a rule signed
+    /// by this identity (see [`SigmaEngine::chunk`]).
+    pub chunk_author: Option<NodeIdentity>,
+    /// Signed chunks waiting to be compiled at the start of the next cycle.
+    pending_chunks: Vec<SkillPackage>,
 }
 
 impl SigmaEngine {
@@ -614,6 +623,9 @@ impl SigmaEngine {
     /// One decision cycle: elaboration (message passing to quiescence, subgoaling), then
     /// decision (select an action, or reach a none / tie / no-change impasse).
     pub fn cognitive_cycle(&mut self) -> CycleOutcome {
+        for chunk in std::mem::take(&mut self.pending_chunks) {
+            let _ = self.compile_skill(chunk);
+        }
         // The last action's utility is backed up from the reward since and the state it led to.
         if let Some((a, state)) = self.last.as_ref().and_then(|l| Some((l.action?, l.state.clone()))) {
             self.back_up_utility(&state, a, self.last_reward);
@@ -652,6 +664,20 @@ impl SigmaEngine {
         };
         let substate::Decision { selected, impasse, substate } = self.decide(&elaboration, repeats);
         let substate::Elaboration { p1, p2, top, top_factors, .. } = elaboration;
+        // Chunking: a substate that settled the impasse leaves a rule behind.
+        let chunk = match (&substate, selected) {
+            // Signed now, compiled at the start of the next cycle (so this cycle's trace,
+            // which reinforcement reads, keeps its factor indices).
+            (Some(s), Some(a)) if s.result.is_some() => self.chunk(top, a).map(|mut c| {
+                if let Some(author) = &self.chunk_author {
+                    c.version = self.export_skill(&c.skill_name).map_or(1, |s| s.version + 1);
+                    author.sign_skill(&mut c);
+                    self.pending_chunks.push(c.clone());
+                }
+                c
+            }),
+            _ => None,
+        };
         let decision_impasse = impasse.map(|(kind, cands, resolved)| DecisionImpasse {
             kind,
             goal: self.vars[top].schema.name.clone(),
@@ -721,6 +747,7 @@ impl SigmaEngine {
             decision_impasse,
             substate,
             awaiting_confirmation: None,
+            chunk,
         };
         self.trace = Some(Trace { factors: active, marginals });
         self.prediction = p2;
