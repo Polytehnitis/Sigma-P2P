@@ -33,6 +33,7 @@ pub mod gpu {
 }
 pub mod graph_memory;
 pub mod inspect;
+pub mod knowledge;
 pub mod language;
 pub mod map;
 pub mod memory;
@@ -431,6 +432,10 @@ pub struct SigmaEngine {
     /// Turns off automatic structure learning of transition parents and perception models
     /// (it still runs on demand with [`SigmaEngine::learn_model_structure`]).
     pub fixed_structure: bool,
+    /// Installed knowledge bases (see [`knowledge`]).
+    knowledge: Vec<Arc<knowledge::KnowledgeBase>>,
+    /// Atoms of installed knowledge: long-term facts, for which no models are learned.
+    knowledge_atoms: HashSet<String>,
 }
 
 impl SigmaEngine {
@@ -1605,6 +1610,12 @@ impl SigmaEngine {
         for (fi, f) in self.factors.iter().enumerate() {
             for (s, _) in f.vars.iter().enumerate().filter(|&(s, &u)| u == v && skip != Some((fi, s))) {
                 b.iter_mut().zip(&msgs[fi][s]).for_each(|(x, m)| *x *= m);
+                // Many normalized messages over a wide domain multiply down towards zero:
+                // rescale before the product underflows f32.
+                let top = b.iter().copied().fold(0.0f32, f32::max);
+                if top > 0.0 && top < 1e-12 {
+                    b.iter_mut().for_each(|x| *x /= top);
+                }
             }
         }
         normalize(b)
@@ -1735,6 +1746,8 @@ mod tests_generalize;
 mod tests_gpu;
 #[cfg(test)]
 mod tests_graph_memory;
+#[cfg(test)]
+mod tests_knowledge;
 #[cfg(test)]
 mod tests_language;
 #[cfg(test)]

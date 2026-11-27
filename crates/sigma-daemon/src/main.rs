@@ -58,6 +58,13 @@ struct Args {
     /// at `/` redraws as skills arrive and syncs change beliefs; `/graph.json` is the snapshot.
     #[arg(long, value_name = "ADDR")]
     serve_graph: Option<std::net::SocketAddr>,
+    /// Ask the starting knowledge a question in English (e.g. "where is Brenna Argall?"),
+    /// print the answer and exit (repeatable).
+    #[arg(long, value_name = "QUESTION")]
+    ask: Vec<String>,
+    /// Start without the built-in knowledge (the smem-question-answering Soar agent's facts).
+    #[arg(long)]
+    no_starting_knowledge: bool,
 }
 
 /// The latest graph snapshot, as JSON, shared with the viewer's server thread.
@@ -173,6 +180,16 @@ async fn main() -> Result<()> {
 
     let mut engine = SigmaEngine::new();
     let restored = store.restore_engine(&mut engine).map_err(|e| anyhow!(e))?;
+    if !args.no_starting_knowledge {
+        // Built in, signed by this node at every start: never stored, synced or offered.
+        engine.install_starting_knowledge(&identity).map_err(|e| anyhow!("starting knowledge: {e}"))?;
+    }
+    if !args.ask.is_empty() {
+        for q in &args.ask {
+            println!("{}", engine.answer_text(q).unwrap_or_else(|| format!("I don't know: {q}")));
+        }
+        return Ok(());
+    }
     if args.dump_graph.is_some() || args.trace_messages {
         if let Some(path) = &args.dump_graph {
             let snapshot = engine.graph_snapshot();
