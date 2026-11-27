@@ -325,6 +325,7 @@ impl SigmaEngine {
             particle_seed: self.particle_seed,
             tabulate_continuous: self.tabulate_continuous,
             attended: self.attended.clone(),
+            idle: self.idle.clone(),
             inference: self.inference,
             options: self.options.clone(),
             replace: self.replace.clone(),

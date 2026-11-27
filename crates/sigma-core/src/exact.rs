@@ -138,7 +138,7 @@ impl SigmaEngine {
         for _ in 0..BP_ITERS {
             let next: Vec<Vec<Plm>> = crate::par_map(self.factors.len(), threads, |fi| {
                 let f = &self.factors[fi];
-                if self.attended.as_ref().is_some_and(|mask| !mask[fi]) {
+                if self.masked(fi) {
                     return f.vars.iter().map(|&v| uniform(v)).collect();
                 }
                 let inbound: Vec<Belief> = f

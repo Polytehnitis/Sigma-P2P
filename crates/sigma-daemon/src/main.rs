@@ -62,7 +62,8 @@ struct Args {
     /// print the answer and exit (repeatable).
     #[arg(long, value_name = "QUESTION")]
     ask: Vec<String>,
-    /// Start without the built-in knowledge (the smem-question-answering Soar agent's facts).
+    /// Start without the built-in knowledge (facts of the smem-question-answering and
+    /// Soar-Lean-Agents Soar agents).
     #[arg(long)]
     no_starting_knowledge: bool,
 }

@@ -193,7 +193,7 @@ pub fn init_agent(storage_dir: String, swarm_passphrase: String, bootstrap_peers
     // Chunking: what reasoning in a substate concludes becomes a rule signed by this node.
     engine.chunk_author = Some(identity.clone());
     let restored = store.restore_engine(&mut engine).map_err(err)?;
-    // Built-in knowledge (the smem-question-answering Soar agent's facts), signed by this node
+    // Built-in knowledge (facts of Soar agents, see sigma_core::knowledge), signed by this node
     // at every start: never stored, synced or offered to peers.
     engine.install_starting_knowledge(&identity).map_err(err)?;
     engine.goal_stack = store.load_goal_stack().map_err(err)?;

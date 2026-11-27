@@ -183,5 +183,137 @@ fn knowledge_leaves_the_agent_alone() {
     let skill = starting_knowledge()[0].skill(&id);
     assert_eq!(skill, starting_knowledge()[0].skill(&id));
     engine.install_starting_knowledge(&id).unwrap();
-    assert_eq!(engine.knowledge_bases().len(), 1);
+    assert_eq!(engine.knowledge_bases().len(), 6);
+}
+
+#[test]
+fn reads_quoted_attributes_and_splits_by_kind() {
+    let g = parse_smem("smem --add { (<a> ^kind x ^|d1| 1) (<b> ^kind y ^|d1| 2) (<c> ^|d1| 3) }").unwrap();
+    assert!(g["a"]["d1"].contains("1"));
+    let kbs = KnowledgeBase::from_smem_by(
+        "t",
+        "T",
+        "smem --add { (<a> ^kind add-fact ^|d1| 1) (<b> ^kind add-fact ^|d1| 2) (<c> ^kind y) (<d> ^kind y) }",
+        "kind",
+    )
+    .unwrap();
+    let names: Vec<&str> = kbs.iter().map(|k| k.name.as_str()).collect();
+    assert_eq!(names, ["t-add-fact", "t-y"]);
+    assert_eq!(kbs[0].attribute("d1").unwrap().predicate, "TAddFactD1");
+    assert!(KnowledgeBase::from_smem_by("t", "T", "smem --add { (<a> ^x 1) }", "kind").is_err());
+}
+
+/// The Soar-Lean-Agents facts are bundled exactly: 110 sums, 165 differences, 10 increments,
+/// 10 plus-tens and 10 successors.
+#[test]
+fn soar_lean_facts_are_loaded() {
+    let kbs = starting_knowledge();
+    let size = |n: &str| kbs.iter().find(|k| k.name == n).unwrap().nodes.len();
+    assert_eq!(
+        (size(ADD_FACTS), size(SUB_FACTS), size(INC_FACTS), size(TEN_FACTS), size(COUNTING)),
+        (110, 165, 10, 10, 10)
+    );
+    let add = kbs.iter().find(|k| k.name == ADD_FACTS).unwrap();
+    assert!(add.holds("l109", "sum", "9") && add.holds("l109", "carry", "1"));
+}
+
+/// The arithmetic-smem agent's column procedure, with every digit fact retrieved by message
+/// passing, agrees with ordinary arithmetic.
+#[test]
+fn adds_and_subtracts_with_retrieved_facts() {
+    let (engine, _) = engine_with_knowledge();
+    for (a, b) in [(0, 0), (7, 5), (47, 38), (999, 1), (1234, 8766), (305, 97)] {
+        assert_eq!(engine.add_numbers(a, b), Some(a + b), "{a} + {b}");
+    }
+    for (a, b) in [(9, 9), (52, 17), (1000, 1), (305, 97), (4321, 1234)] {
+        assert_eq!(engine.subtract_numbers(a, b), Some(a - b), "{a} - {b}");
+    }
+    assert_eq!(engine.subtract_numbers(3, 10), None);
+    // A digit difference that needs a borrow is a retrieval failure first.
+    assert_eq!(engine.recall(SUB_FACTS, &[("d1", "2"), ("d2", "7")], "diff"), None);
+    assert_eq!(engine.recall(TEN_FACTS, &[("n", "2")], "plus10").as_deref(), Some("12"));
+    assert_eq!(engine.recall(SUB_FACTS, &[("d1", "12"), ("d2", "7")], "diff").as_deref(), Some("5"));
+    // Without the facts there is nothing to add with.
+    assert_eq!(SigmaEngine::new().add_numbers(1, 1), None);
+}
+
+/// The count-add-smem agent: a digit plus a digit by counting with successor facts.
+#[test]
+fn adds_digits_by_counting() {
+    let (engine, _) = engine_with_knowledge();
+    for d1 in [0u8, 3, 9] {
+        for d2 in [0u8, 1, 7] {
+            assert_eq!(engine.count_add(d1, d2), Some(((d1 + d2) % 10, d1 + d2 >= 10)), "{d1} + {d2}");
+        }
+    }
+    assert_eq!(engine.count_add(10, 1), None);
+}
+
+#[test]
+fn answers_arithmetic_in_english() {
+    assert_eq!(parse_arithmetic("What is 47 plus 38?"), Some((47, '+', 38)));
+    assert_eq!(parse_arithmetic("125 - 98"), Some((125, '-', 98)));
+    assert_eq!(parse_arithmetic("subtract 3 from 10"), Some((10, '-', 3)));
+    assert_eq!(parse_arithmetic("who has the phone number 8474671256"), None);
+    let (engine, _) = engine_with_knowledge();
+    assert_eq!(engine.answer_text("what is 47 plus 38?").unwrap(), "47 plus 38 is 85.");
+    assert_eq!(engine.answer_text("subtract 98 from 125").unwrap(), "125 minus 98 is 27.");
+    // Digit tables do not answer English questions about single facts.
+    assert_eq!(engine.answer_text("where is 5"), None);
+}
+
+/// Knowledge no goal reaches sits out the decision cycle's message passing; a skill that links
+/// a goal to it brings it back.
+#[test]
+fn idle_knowledge_sits_out_the_cycle() {
+    let (mut engine, id) = engine_with_knowledge();
+    engine.compile_skill(signed_program(&id, "device-backup", device_backup_program())).unwrap();
+    engine.push_goal("Backup(usb)");
+    let mask = engine.idle_knowledge_mask().unwrap();
+    let idle = |e: &SigmaEngine, m: &[bool]| e.factors().iter().zip(m).filter(|(_, &on)| !on).count();
+    let knowledge = engine.factors().iter().filter(|f| f.skill.skill_name.starts_with("knowledge:")).count();
+    assert_eq!(idle(&engine, &mask), knowledge);
+    assert_eq!(engine.cognitive_cycle().selected_action.as_deref(), Some("Mount(usb)"));
+
+    // A goal that needs a fact: the faculty knowledge is reached and takes part.
+    let program = Program {
+        types: vec![],
+        predicates: vec![
+            PredicateDef { name: "MeetFaculty".into(), role: PredicateRole::Goal, args: vec![], value_type: None },
+            PredicateDef {
+                name: "FacultyIsa".into(),
+                role: PredicateRole::Context,
+                args: vec!["Faculty-isa".into()],
+                value_type: None,
+            },
+        ],
+        conditionals: vec![Conditional {
+            name: "meet-needs-faculty".into(),
+            patterns: vec![
+                Pattern { kind: PatternKind::Condition, predicate: "MeetFaculty".into(), args: vec![] },
+                Pattern {
+                    kind: PatternKind::Condact,
+                    predicate: "FacultyIsa".into(),
+                    args: vec![Term::Const("CSFaculty".into())],
+                },
+            ],
+            function_vars: vec![],
+            function: Function::Table(vec![1.0, 1.0, 1.0, 2.0]),
+            learnable: false,
+            normal: None,
+        }],
+    };
+    let mut prog = program.clone();
+    let isa = engine.knowledge_bases()[0].attribute("isa").unwrap().values.clone();
+    prog.types.push(TypeDef { name: "Faculty-isa".into(), kind: TypeKind::Symbolic(isa) });
+    engine.compile_skill(signed_program(&id, "meet", prog)).unwrap();
+    engine.goal_stack = vec!["MeetFaculty".into()];
+    let mask = engine.idle_knowledge_mask().unwrap();
+    assert!(idle(&engine, &mask) < knowledge);
+    let faculty = engine
+        .factors()
+        .iter()
+        .zip(&mask)
+        .filter(|(f, &on)| on && f.skill.skill_name == format!("knowledge:{SOAR_QA_NAME}"));
+    assert!(faculty.count() > 0);
 }
