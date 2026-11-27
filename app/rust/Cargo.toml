@@ -10,6 +10,7 @@ crate-type = ["cdylib", "staticlib"]
 [dependencies]
 sigma-core.workspace = true
 sigma-net.workspace = true
+sigma-desktop.workspace = true
 flutter_rust_bridge = "=2.13.0"
 tokio.workspace = true
 anyhow.workspace = true

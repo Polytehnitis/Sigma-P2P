@@ -29,6 +29,12 @@ CognitiveStep step({
   attendedSkills: attended,
   motorCommands: const [],
   undoStack: const [],
+  desktopEvents: const [],
+  desktop: const DesktopStatus(
+    supported: false,
+    control: false,
+    perception: false,
+  ),
 );
 
 void main() {

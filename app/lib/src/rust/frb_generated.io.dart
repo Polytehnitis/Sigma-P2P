@@ -64,6 +64,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DecisionImpasseKind dco_decode_decision_impasse_kind(dynamic raw);
 
   @protected
+  DesktopEvent dco_decode_desktop_event(dynamic raw);
+
+  @protected
+  DesktopStatus dco_decode_desktop_status(dynamic raw);
+
+  @protected
   Emotion dco_decode_emotion(dynamic raw);
 
   @protected
@@ -95,6 +101,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Belief> dco_decode_list_belief(dynamic raw);
+
+  @protected
+  List<DesktopEvent> dco_decode_list_desktop_event(dynamic raw);
 
   @protected
   List<Evidence> dco_decode_list_evidence(dynamic raw);
@@ -214,6 +223,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DesktopEvent sse_decode_desktop_event(SseDeserializer deserializer);
+
+  @protected
+  DesktopStatus sse_decode_desktop_status(SseDeserializer deserializer);
+
+  @protected
   Emotion sse_decode_emotion(SseDeserializer deserializer);
 
   @protected
@@ -247,6 +262,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Belief> sse_decode_list_belief(SseDeserializer deserializer);
+
+  @protected
+  List<DesktopEvent> sse_decode_list_desktop_event(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<Evidence> sse_decode_list_evidence(SseDeserializer deserializer);
@@ -389,6 +409,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_desktop_event(DesktopEvent self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_desktop_status(DesktopStatus self, SseSerializer serializer);
+
+  @protected
   void sse_encode_emotion(Emotion self, SseSerializer serializer);
 
   @protected
@@ -429,6 +455,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_belief(List<Belief> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_desktop_event(
+    List<DesktopEvent> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_evidence(List<Evidence> self, SseSerializer serializer);

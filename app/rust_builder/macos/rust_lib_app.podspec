@@ -25,7 +25,10 @@ A new Flutter FFI plugin project.
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
   s.swift_version = '5.0'
   # iroh (netwatch, DNS, proxy discovery) links against these system libraries.
-  s.frameworks = 'SystemConfiguration', 'Security', 'Network'
+  # Desktop control: enigo (keyboard layouts, events) and xcap (screen capture).
+  s.frameworks = 'SystemConfiguration', 'Security', 'Network',
+                 'Carbon', 'ApplicationServices', 'CoreGraphics', 'CoreMedia',
+                 'CoreVideo', 'AVFoundation', 'IOSurface'
   s.libraries = 'resolv'
 
   s.script_phase = {

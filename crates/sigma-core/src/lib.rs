@@ -14,6 +14,7 @@ pub mod appraisal;
 pub mod crypto;
 pub mod decision;
 pub mod demos;
+pub mod desktop;
 mod exact;
 pub mod field;
 pub mod generalize;
@@ -58,6 +59,7 @@ use std::sync::Arc;
 pub use actions::{ActionManifest, ActionSpec, ConfirmationGate, PendingAction, Undone};
 pub use crypto::NodeIdentity;
 pub use decision::{Preference, PreferenceKind, Selection};
+pub use desktop::DesktopAction;
 pub use graph_memory::{ActionModel, LearnedModels};
 pub use language::{Intent, Interpretation, PhraseBook, Route};
 pub use map::MapEstimate;
@@ -1806,6 +1808,8 @@ mod tests_continuous;
 mod tests_continuous_args;
 #[cfg(test)]
 mod tests_decision;
+#[cfg(test)]
+mod tests_desktop;
 #[cfg(test)]
 mod tests_exact;
 #[cfg(test)]

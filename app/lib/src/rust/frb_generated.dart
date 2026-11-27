@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 269936221;
+  int get rustContentHash => -317861680;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -88,6 +88,12 @@ abstract class RustLibApi extends BaseApi {
   Future<String> crateApiAgentConfirmAction({required String token});
 
   Future<String> crateApiAgentCreatePairingCode();
+
+  String crateApiAgentDescribeAction({required String action});
+
+  bool crateApiAgentDesktopControlSupported();
+
+  Future<DesktopStatus> crateApiAgentDesktopStatus();
 
   Future<void> crateApiAgentForgetPhrase({required String phrase});
 
@@ -121,6 +127,14 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<void> crateApiAgentSetActionRules({required List<ActionRule> rules});
+
+  Future<DesktopStatus> crateApiAgentSetDesktopControl({required bool enabled});
+
+  Future<DesktopStatus> crateApiAgentSetScreenPerception({
+    required bool enabled,
+  });
+
+  Future<DesktopStatus> crateApiAgentStopDesktopControl();
 
   Future<int> crateApiAgentSyncNow();
 
@@ -261,6 +275,78 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "create_pairing_code", argNames: []);
 
   @override
+  String crateApiAgentDescribeAction({required String action}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(action, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 5)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiAgentDescribeActionConstMeta,
+        argValues: [action],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentDescribeActionConstMeta =>
+      const TaskConstMeta(debugName: "describe_action", argNames: ["action"]);
+
+  @override
+  bool crateApiAgentDesktopControlSupported() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiAgentDesktopControlSupportedConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentDesktopControlSupportedConstMeta =>
+      const TaskConstMeta(debugName: "desktop_control_supported", argNames: []);
+
+  @override
+  Future<DesktopStatus> crateApiAgentDesktopStatus() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 7,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_desktop_status,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiAgentDesktopStatusConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentDesktopStatusConstMeta =>
+      const TaskConstMeta(debugName: "desktop_status", argNames: []);
+
+  @override
   Future<void> crateApiAgentForgetPhrase({required String phrase}) {
     return handler.executeNormal(
       NormalTask(
@@ -270,7 +356,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 8,
             port: port_,
           );
         },
@@ -304,7 +390,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 9,
             port: port_,
           );
         },
@@ -333,7 +419,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 10,
             port: port_,
           );
         },
@@ -365,7 +451,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 11,
             port: port_,
           );
         },
@@ -396,7 +482,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 12,
             port: port_,
           );
         },
@@ -423,7 +509,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 13,
             port: port_,
           );
         },
@@ -455,7 +541,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 14,
             port: port_,
           );
         },
@@ -487,7 +573,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 15,
             port: port_,
           );
         },
@@ -519,7 +605,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 16,
             port: port_,
           );
         },
@@ -550,7 +636,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 17,
             port: port_,
           );
         },
@@ -569,6 +655,99 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "set_action_rules", argNames: ["rules"]);
 
   @override
+  Future<DesktopStatus> crateApiAgentSetDesktopControl({
+    required bool enabled,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_bool(enabled, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 18,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_desktop_status,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiAgentSetDesktopControlConstMeta,
+        argValues: [enabled],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentSetDesktopControlConstMeta =>
+      const TaskConstMeta(
+        debugName: "set_desktop_control",
+        argNames: ["enabled"],
+      );
+
+  @override
+  Future<DesktopStatus> crateApiAgentSetScreenPerception({
+    required bool enabled,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_bool(enabled, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 19,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_desktop_status,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiAgentSetScreenPerceptionConstMeta,
+        argValues: [enabled],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentSetScreenPerceptionConstMeta =>
+      const TaskConstMeta(
+        debugName: "set_screen_perception",
+        argNames: ["enabled"],
+      );
+
+  @override
+  Future<DesktopStatus> crateApiAgentStopDesktopControl() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 20,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_desktop_status,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiAgentStopDesktopControlConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiAgentStopDesktopControlConstMeta =>
+      const TaskConstMeta(debugName: "stop_desktop_control", argNames: []);
+
+  @override
   Future<int> crateApiAgentSyncNow() {
     return handler.executeNormal(
       NormalTask(
@@ -577,7 +756,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 21,
             port: port_,
           );
         },
@@ -604,7 +783,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 22,
             port: port_,
           );
         },
@@ -636,7 +815,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 23,
             port: port_,
           );
         },
@@ -671,7 +850,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 24,
             port: port_,
           );
         },
@@ -701,7 +880,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 25,
             port: port_,
           );
         },
@@ -731,7 +910,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 26,
             port: port_,
           );
         },
@@ -759,7 +938,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 27,
             port: port_,
           );
         },
@@ -870,8 +1049,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   CognitiveStep dco_decode_cognitive_step(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 11)
-      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    if (arr.length != 13)
+      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
     return CognitiveStep(
       goalStack: dco_decode_list_String(arr[0]),
       selectedAction: dco_decode_opt_String(arr[1]),
@@ -886,6 +1065,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       ),
       motorCommands: dco_decode_list_String(arr[9]),
       undoStack: dco_decode_list_String(arr[10]),
+      desktopEvents: dco_decode_list_desktop_event(arr[11]),
+      desktop: dco_decode_desktop_status(arr[12]),
     );
   }
 
@@ -920,6 +1101,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DecisionImpasseKind dco_decode_decision_impasse_kind(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return DecisionImpasseKind.values[raw as int];
+  }
+
+  @protected
+  DesktopEvent dco_decode_desktop_event(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return DesktopEvent(
+      action: dco_decode_String(arr[0]),
+      message: dco_decode_String(arr[1]),
+      ok: dco_decode_bool(arr[2]),
+    );
+  }
+
+  @protected
+  DesktopStatus dco_decode_desktop_status(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return DesktopStatus(
+      supported: dco_decode_bool(arr[0]),
+      control: dco_decode_bool(arr[1]),
+      perception: dco_decode_bool(arr[2]),
+      focusedApp: dco_decode_opt_String(arr[3]),
+    );
   }
 
   @protected
@@ -1007,6 +1215,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<Belief> dco_decode_list_belief(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_belief).toList();
+  }
+
+  @protected
+  List<DesktopEvent> dco_decode_list_desktop_event(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_desktop_event).toList();
   }
 
   @protected
@@ -1290,6 +1504,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_decode_opt_box_autoadd_confirmation_request(deserializer);
     var var_motorCommands = sse_decode_list_String(deserializer);
     var var_undoStack = sse_decode_list_String(deserializer);
+    var var_desktopEvents = sse_decode_list_desktop_event(deserializer);
+    var var_desktop = sse_decode_desktop_status(deserializer);
     return CognitiveStep(
       goalStack: var_goalStack,
       selectedAction: var_selectedAction,
@@ -1302,6 +1518,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       awaitingConfirmation: var_awaitingConfirmation,
       motorCommands: var_motorCommands,
       undoStack: var_undoStack,
+      desktopEvents: var_desktopEvents,
+      desktop: var_desktop,
     );
   }
 
@@ -1339,6 +1557,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
     return DecisionImpasseKind.values[inner];
+  }
+
+  @protected
+  DesktopEvent sse_decode_desktop_event(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_action = sse_decode_String(deserializer);
+    var var_message = sse_decode_String(deserializer);
+    var var_ok = sse_decode_bool(deserializer);
+    return DesktopEvent(action: var_action, message: var_message, ok: var_ok);
+  }
+
+  @protected
+  DesktopStatus sse_decode_desktop_status(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_supported = sse_decode_bool(deserializer);
+    var var_control = sse_decode_bool(deserializer);
+    var var_perception = sse_decode_bool(deserializer);
+    var var_focusedApp = sse_decode_opt_String(deserializer);
+    return DesktopStatus(
+      supported: var_supported,
+      control: var_control,
+      perception: var_perception,
+      focusedApp: var_focusedApp,
+    );
   }
 
   @protected
@@ -1444,6 +1686,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <Belief>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_belief(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<DesktopEvent> sse_decode_list_desktop_event(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <DesktopEvent>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_desktop_event(deserializer));
     }
     return ans_;
   }
@@ -1764,6 +2020,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     );
     sse_encode_list_String(self.motorCommands, serializer);
     sse_encode_list_String(self.undoStack, serializer);
+    sse_encode_list_desktop_event(self.desktopEvents, serializer);
+    sse_encode_desktop_status(self.desktop, serializer);
   }
 
   @protected
@@ -1796,6 +2054,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_desktop_event(DesktopEvent self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.action, serializer);
+    sse_encode_String(self.message, serializer);
+    sse_encode_bool(self.ok, serializer);
+  }
+
+  @protected
+  void sse_encode_desktop_status(DesktopStatus self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.supported, serializer);
+    sse_encode_bool(self.control, serializer);
+    sse_encode_bool(self.perception, serializer);
+    sse_encode_opt_String(self.focusedApp, serializer);
   }
 
   @protected
@@ -1888,6 +2163,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_belief(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_desktop_event(
+    List<DesktopEvent> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_desktop_event(item, serializer);
     }
   }
 
