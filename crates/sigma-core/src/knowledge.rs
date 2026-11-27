@@ -587,7 +587,8 @@ pub const COUNTING: &str = "counting";
 /// * the smem-question-answering Soar agent's faculty directory;
 /// * the arithmetic facts of Soar-Lean-Agents' arithmetic-smem agent (single-digit sums with
 ///   carry, differences up to 19 − 10, increments and plus-ten), one base per kind of fact;
-/// * the successor facts of its count-add-smem agent (0 → 1 … 9 → 0).
+/// * the successor facts of its count-add-smem agent (0 → 1 … 9 → 0);
+/// * Rosie's category ontology and property words (see [`crate::rosie`]).
 pub fn starting_knowledge() -> Vec<KnowledgeBase> {
     let bundled = "bundled knowledge is valid";
     let mut out = vec![KnowledgeBase::from_smem(SOAR_QA_NAME, SOAR_QA_PREFIX, SOAR_QA_SOURCE).expect(bundled)];
@@ -595,6 +596,7 @@ pub fn starting_knowledge() -> Vec<KnowledgeBase> {
     out.push(KnowledgeBase::from_smem(COUNTING, "Count", COUNTING_SOURCE).expect(bundled));
     // Digit tables are for the procedures, not for questions about single facts.
     out.iter_mut().skip(1).for_each(|kb| kb.english = false);
+    out.extend(crate::rosie::rosie_knowledge());
     out
 }
 
@@ -826,10 +828,16 @@ impl SigmaEngine {
                 return Some(format!("{a} {word} {b} is {r}."));
             }
         }
-        self.knowledge.iter().filter(|kb| kb.english).find_map(|kb| {
-            let q = kb.parse_question(text)?;
-            let a = self.answer(&kb.name, &q)?;
-            Some(kb.say(&q, &a))
-        })
+        // Questions that name something specific (a person in the faculty directory) come
+        // before Rosie's general categories, so "where is Brenna Argall's office?" is about her.
+        self.knowledge
+            .iter()
+            .filter(|kb| kb.english)
+            .find_map(|kb| {
+                let q = kb.parse_question(text)?;
+                let a = self.answer(&kb.name, &q)?;
+                Some(kb.say(&q, &a))
+            })
+            .or_else(|| self.answer_rosie(text))
     }
 }
