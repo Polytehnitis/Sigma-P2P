@@ -275,7 +275,7 @@ impl Sweep {
         }
         let out: Vec<f32> = {
             let view = self.readback.get_mapped_range(..).ok()?;
-            view.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
+            view.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect()
         };
         self.readback.unmap();
         SWEEPS.fetch_add(1, Ordering::Relaxed);
