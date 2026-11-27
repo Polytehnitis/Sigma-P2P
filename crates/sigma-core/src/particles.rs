@@ -255,7 +255,7 @@ impl SigmaEngine {
                 Some(a) => {
                     let coords: Vec<f32> = (0..dims.len()).map(|s| point(s).unwrap_or(idx[s] as f32)).collect();
                     let flat = grid.iter().zip(&shape).fold(0, |acc, (&g, &d)| acc * d + g);
-                    let i0 = init.get(f.offset + flat).copied().unwrap_or(0.0);
+                    let i0 = init.get(f.weight_index(flat)).copied().unwrap_or(0.0);
                     if i0 > 0.0 {
                         a.eval(&coords) * live / i0
                     } else {

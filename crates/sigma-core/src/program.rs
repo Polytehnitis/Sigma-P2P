@@ -40,6 +40,12 @@ impl TypeDef {
         Self { name: name.into(), kind: TypeKind::Symbolic(values.iter().map(|v| v.to_string()).collect()) }
     }
 
+    /// The integers `lo..hi` as an ordered symbolic type (`"lo"`, …), for coordinates that
+    /// affine transforms shift, mirror or rotate.
+    pub fn range(name: &str, lo: i32, hi: i32) -> Self {
+        Self { name: name.into(), kind: TypeKind::Symbolic((lo..hi).map(|i| i.to_string()).collect()) }
+    }
+
     pub fn continuous(name: &str, lo: f32, hi: f32, bins: usize) -> Self {
         Self { name: name.into(), kind: TypeKind::Continuous { lo, hi, bins } }
     }
@@ -173,6 +179,24 @@ pub enum PatternKind {
 pub enum Term {
     Var(String),
     Const(String),
+    /// Sigma's affine transform of a variable: the argument is the value at index
+    /// `coef · i + offset` of the argument's (ordered) type, where `i` is the variable's index.
+    /// Where that falls outside the type, the pattern is padded: it holds the constant value
+    /// `pad` (an index into the predicate's value domain), or with no `pad` the binding is
+    /// skipped. This is how a conditional shifts, mirrors or rotates a map or an image.
+    Affine {
+        var: String,
+        coef: i32,
+        offset: i32,
+        pad: Option<usize>,
+    },
+}
+
+impl Term {
+    /// A shift by `offset` (Sigma's `:offset`), padded with value `pad` outside the type.
+    pub fn shift(var: &str, offset: i32, pad: Option<usize>) -> Self {
+        Term::Affine { var: var.into(), coef: 1, offset, pad }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -214,6 +238,8 @@ pub struct GroundFactor {
     /// The analytic function behind a piecewise-linear or Gaussian factor, for evaluation at
     /// exact (particle) points rather than region midpoints.
     pub analytic: Option<Arc<Analytic>>,
+    /// Flat weight position of each value, when they are not contiguous from `offset`.
+    pub layout: Option<Vec<usize>>,
 }
 
 /// An analytic conditional function restricted to one binding of its function variables.
@@ -386,7 +412,11 @@ impl Program {
                     match term {
                         Term::Const(k) if !values.contains(k) => return Err("constant outside its type"),
                         Term::Const(_) => {}
-                        Term::Var(x) => match var_types.iter().find(|(n, _)| n == x) {
+                        Term::Affine { coef: 0, .. } => return Err("affine coefficient is zero"),
+                        Term::Affine { pad: Some(v), .. } if *v >= preds[pat.predicate.as_str()].1 => {
+                            return Err("pad outside the predicate's values")
+                        }
+                        Term::Var(x) | Term::Affine { var: x, .. } => match var_types.iter().find(|(n, _)| n == x) {
                             Some((_, t)) if !std::ptr::eq(*t, values) => return Err("variable used with two types"),
                             Some(_) => {}
                             None => var_types.push((x, values)),
@@ -421,46 +451,77 @@ impl Program {
             }
             let kinds: Vec<PatternKind> = c.patterns.iter().map(|p| p.kind).collect();
             for_each_assignment(&dims, |a| {
-                let value = |x: &str| {
-                    let i = var_types.iter().position(|(n, _)| *n == x).expect("bound above");
-                    var_types[i].1[a[i]].as_str()
-                };
-                let predicates: Vec<PredicateSchema> = c
-                    .patterns
-                    .iter()
-                    .map(|pat| {
-                        let (p, d) = preds[pat.predicate.as_str()];
-                        let args: Vec<&str> = pat
-                            .args
-                            .iter()
-                            .map(|t| match t {
-                                Term::Var(x) => value(x),
-                                Term::Const(k) => k.as_str(),
-                            })
-                            .collect();
-                        PredicateSchema { name: atom_name(&p.name, &args), domain_size: d, role: p.role }
-                    })
-                    .collect();
+                let index = |x: &str| var_types.iter().position(|(n, _)| *n == x).expect("bound above");
+                // Each pattern's ground atom, or the value it is padded with.
+                let mut atoms: Vec<Result<PredicateSchema, usize>> = Vec::with_capacity(c.patterns.len());
+                for pat in &c.patterns {
+                    let (p, d) = preds[pat.predicate.as_str()];
+                    let mut args: Vec<&str> = Vec::with_capacity(pat.args.len());
+                    let mut pad = None;
+                    for (t, ty) in pat.args.iter().zip(&p.args) {
+                        match t {
+                            Term::Var(x) => args.push(var_types[index(x)].1[a[index(x)]].as_str()),
+                            Term::Const(k) => args.push(k.as_str()),
+                            Term::Affine { var, coef, offset, pad: fill } => {
+                                let values = types[ty.as_str()];
+                                let j = *coef as i64 * a[index(var)] as i64 + *offset as i64;
+                                match usize::try_from(j).ok().filter(|&j| j < values.len()) {
+                                    Some(j) => args.push(values[j].as_str()),
+                                    None => match fill {
+                                        Some(v) => pad = pad.or(Some(*v)),
+                                        None => return, // outside the type, unpadded: no binding
+                                    },
+                                }
+                            }
+                        }
+                    }
+                    atoms.push(match pad {
+                        Some(v) => Err(v),
+                        None => Ok(PredicateSchema { name: atom_name(&p.name, &args), domain_size: d, role: p.role }),
+                    });
+                }
+                let predicates: Vec<PredicateSchema> = atoms.iter().filter_map(|x| x.clone().ok()).collect();
                 // A binding that maps two patterns onto the same atom is skipped (atoms in one
-                // factor are distinct).
-                if predicates.iter().map(|p| &p.name).collect::<HashSet<_>>().len() != predicates.len() {
+                // factor are distinct), and so is one with every pattern padded.
+                if predicates.is_empty()
+                    || predicates.iter().map(|p| &p.name).collect::<HashSet<_>>().len() != predicates.len()
+                {
                     return;
                 }
                 let slice = fv.iter().fold(0, |acc, &i| acc * dims[i] + a[i]);
                 let start = slice * slice_len;
+                let padded = predicates.len() < c.patterns.len();
+                let (values, layout) = if padded {
+                    // Keep the entries at the padded patterns' fixed values.
+                    let (mut values, mut layout) = (Vec::new(), Vec::new());
+                    for_each_assignment(&value_dims, |idx| {
+                        if atoms.iter().zip(idx).all(|(x, &i)| x.as_ref().err().is_none_or(|&v| v == i)) {
+                            let flat = idx.iter().zip(&value_dims).fold(0, |acc, (&i, &d)| acc * d + i);
+                            values.push(function[start + flat]);
+                            layout.push(offset + start + flat);
+                        }
+                    });
+                    (values, Some(layout))
+                } else {
+                    (function[start..start + slice_len].to_vec(), None)
+                };
+                let kept = |i: usize| atoms[i].is_ok();
                 factors.push(GroundFactor {
                     predicates,
-                    kinds: kinds.clone(),
-                    values: function[start..start + slice_len].to_vec(),
+                    kinds: kinds.iter().enumerate().filter(|&(i, _)| kept(i)).map(|(_, k)| *k).collect(),
+                    values,
                     offset: offset + start,
                     learnable: c.learnable,
-                    normal: c.normal,
-                    analytic: (!matches!(c.function, Function::Table(_))).then(|| {
+                    normal: c.normal.filter(|&n| kept(n)).map(|n| (0..n).filter(|&i| kept(i)).count()),
+                    // A padded factor is evaluated through its table (its analytic form spans
+                    // every pattern).
+                    analytic: (!padded && !matches!(c.function, Function::Table(_))).then(|| {
                         Arc::new(Analytic {
                             function: c.function.clone(),
                             prefix: fv.iter().map(|&i| a[i] as f32).collect(),
                         })
                     }),
+                    layout,
                 });
             });
             offset += function.len();
@@ -571,6 +632,7 @@ impl Skill {
                     learnable: true,
                     normal: None,
                     analytic: None,
+                    layout: None,
                 }],
             }),
             SkillBody::Program(p) => p.ground(),
