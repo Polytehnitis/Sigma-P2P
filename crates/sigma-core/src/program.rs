@@ -439,6 +439,8 @@ pub struct Grounding {
     pub weights: Vec<f32>,
     /// Options of predicates, by predicate name (format v3).
     pub options: Vec<(String, PredicateOptions)>,
+    /// `replace` and `vector` flags (format v4).
+    pub flags: Flags,
 }
 
 /// The name of a ground atom: `Pred` for 0-ary predicates, else `Pred(a,b)`.
@@ -731,7 +733,7 @@ impl Program {
             offset += function.len();
             weights.extend(function);
         }
-        Ok(Grounding { atoms, ranges, factors, weights, options: Vec::new() })
+        Ok(Grounding { atoms, ranges, factors, weights, options: Vec::new(), flags: Flags::default() })
     }
 }
 
@@ -754,6 +756,42 @@ pub enum SkillBody {
     /// Format v3: a v2 program with extensions (predicate options). Older nodes reject it as
     /// malformed, as they do any unknown format.
     Extended(Program, Extensions),
+    /// Format v4: a v3 program with Sigma's `replace` and `vector` predicate options too.
+    /// Older nodes reject it as malformed, as they do any unknown format.
+    Flagged(Program, Extensions, Flags),
+}
+
+/// Sigma's `replace` and `vector` predicate options, carried by a format-v4 skill.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct Flags {
+    /// Predicates whose working memory is *replaced* by what action patterns write into it at
+    /// the end of each decision cycle (Sigma's `:replace`), instead of only being read.
+    pub replace: Vec<String>,
+    /// Vector predicates (Sigma's `:vector`): beliefs are vectors normalized to unit length
+    /// rather than distributions, compared by cosine similarity.
+    pub vector: Vec<String>,
+}
+
+impl Flags {
+    /// Each flag names one of the program's discrete predicates once.
+    pub fn check(&self, program: &Program) -> Result<(), &'static str> {
+        for list in [&self.replace, &self.vector] {
+            let mut seen = HashSet::new();
+            for name in list {
+                let def = program.predicates.iter().find(|p| &p.name == name).ok_or("flag on an unknown predicate")?;
+                if !seen.insert(name) {
+                    return Err("duplicate predicate flag");
+                }
+                let continuous = def.value_type.as_ref().is_some_and(|t| {
+                    program.types.iter().any(|ty| &ty.name == t && matches!(ty.kind, TypeKind::Continuous { .. }))
+                });
+                if continuous {
+                    return Err("replace and vector apply to discrete predicates");
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl From<SkillPackage> for Skill {
@@ -806,11 +844,37 @@ impl Skill {
         }
     }
 
+    /// A new, unsigned v4 skill: a program with predicate options and flags.
+    pub fn program_with_flags(
+        skill_name: &str,
+        version: u64,
+        program: Program,
+        predicate_options: Vec<(String, PredicateOptions)>,
+        flags: Flags,
+    ) -> Self {
+        Skill {
+            skill_name: skill_name.into(),
+            version,
+            author_pubkey: [0; 32],
+            signature: Vec::new(),
+            body: SkillBody::Flagged(program, Extensions { predicate_options }, flags),
+        }
+    }
+
     pub fn format_version(&self) -> u8 {
         match self.body {
             SkillBody::Table { .. } => 1,
             SkillBody::Program(_) => 2,
             SkillBody::Extended(..) => 3,
+            SkillBody::Flagged(..) => 4,
+        }
+    }
+
+    /// The program of a v2, v3 or v4 skill.
+    pub fn program_body(&self) -> Option<&Program> {
+        match &self.body {
+            SkillBody::Table { .. } => None,
+            SkillBody::Program(p) | SkillBody::Extended(p, _) | SkillBody::Flagged(p, _, _) => Some(p),
         }
     }
 
@@ -826,7 +890,7 @@ impl Skill {
                 factor_shape: factor_shape.clone(),
                 factor_values: factor_values.clone(),
             }),
-            SkillBody::Program(_) | SkillBody::Extended(..) => None,
+            SkillBody::Program(_) | SkillBody::Extended(..) | SkillBody::Flagged(..) => None,
         }
     }
 
@@ -843,6 +907,12 @@ impl Skill {
                 x.check(p)?;
                 NodeIdentity::verify_any_skill(self)
             }
+            SkillBody::Flagged(p, x, f) => {
+                p.ground()?;
+                x.check(p)?;
+                f.check(p)?;
+                NodeIdentity::verify_any_skill(self)
+            }
         }
     }
 
@@ -851,6 +921,7 @@ impl Skill {
         match &self.body {
             SkillBody::Table { predicates, factor_values, .. } => Ok(Grounding {
                 options: Vec::new(),
+                flags: Flags::default(),
                 atoms: predicates.clone(),
                 ranges: Vec::new(),
                 weights: factor_values.clone(),
@@ -869,6 +940,12 @@ impl Skill {
             SkillBody::Extended(p, x) => {
                 let mut g = p.ground()?;
                 g.options = x.predicate_options.clone();
+                Ok(g)
+            }
+            SkillBody::Flagged(p, x, f) => {
+                let mut g = p.ground()?;
+                g.options = x.predicate_options.clone();
+                g.flags = f.clone();
                 Ok(g)
             }
         }
@@ -893,7 +970,7 @@ impl Skill {
         let base = atom.split('(').next().unwrap_or(atom);
         match &self.body {
             SkillBody::Table { predicates, .. } => predicates.iter().any(|p| p.name == atom),
-            SkillBody::Program(p) | SkillBody::Extended(p, _) => {
+            SkillBody::Program(p) | SkillBody::Extended(p, _) | SkillBody::Flagged(p, _, _) => {
                 p.conditionals.iter().flat_map(|c| &c.patterns).any(|pat| pat.predicate == base)
             }
         }

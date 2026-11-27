@@ -33,6 +33,8 @@ pub const FAST_PATH_SCORE: f32 = 0.75;
 pub const FAST_PATH_MARGIN: f32 = 0.15;
 /// Posterior an inferred intent needs to be used.
 pub const INFERENCE_POSTERIOR: f32 = 0.55;
+/// Added to a predicate's match when the parse's core alone matches it.
+const CORE_BONUS: f32 = 0.15;
 /// Below this word similarity, two words do not match.
 const WORD_MATCH: f32 = 0.75;
 
@@ -545,8 +547,50 @@ pub fn interpret(
         }
     }
 
+    // Parsing in the graph: the sentence's core (its root and content dependents) is matched
+    // too, so filler around a command does not hide it.
+    let core = crate::parse::Grammar::for_predicates(predicates)
+        .parse(&u.words)
+        .map(|p| p.core())
+        .filter(|c| !c.is_empty() && c.len() < u.words.len())
+        .map(|c| {
+            let mut cu = Utterance::new(&c.join(" "));
+            cu.negated |= u.negated;
+            cu.goal_cue |= u.goal_cue;
+            cu.observation_cue |= u.observation_cue;
+            cu.question |= u.question;
+            cu
+        });
+    if let Some(cu) = &core {
+        for p in targets(predicates) {
+            let (mut score, flipped) = cu.match_words(&predicate_words(p));
+            // Matching the command's core is stronger evidence than matching anywhere.
+            if score > 0.0 {
+                score = (score + CORE_BONUS).min(1.0);
+            }
+            if cu.question && p.role != PredicateRole::Goal {
+                score -= 0.3;
+            }
+            if score > 0.0 {
+                if let Some(intent) = predicate_intent(p, cu, flipped) {
+                    match ranked.iter_mut().find(|r| r.0 == intent) {
+                        Some(r) => r.1 = r.1.max(score),
+                        None => ranked.push((intent, score)),
+                    }
+                }
+            }
+        }
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    }
+
     // Inference: naive Bayes over everything known, blended with the direct matches.
-    let posterior = Classifier::new(predicates, phrases).posterior(&u.content());
+    let classifier = Classifier::new(predicates, phrases);
+    let mut posterior = classifier.posterior(&u.content());
+    if posterior.is_empty() {
+        if let Some(cu) = &core {
+            posterior = classifier.posterior(&cu.content());
+        }
+    }
     let mut blended: BTreeMap<Intent, f32> = posterior.iter().cloned().collect();
     for (intent, score) in &ranked {
         let p = blended.entry(intent.clone()).or_insert(0.0);

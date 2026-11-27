@@ -99,6 +99,11 @@ pub fn any_skill_digest(s: &Skill) -> blake3::Hash {
             let bytes = postcard::to_allocvec(&body).expect("in-memory encoding cannot fail");
             blake3::Hasher::new_derive_key("sigma-skill v3").update(&bytes).finalize()
         }
+        SkillBody::Flagged(p, x, f) => {
+            let body = (&s.skill_name, s.version, p, x, f);
+            let bytes = postcard::to_allocvec(&body).expect("in-memory encoding cannot fail");
+            blake3::Hasher::new_derive_key("sigma-skill v4").update(&bytes).finalize()
+        }
     }
 }
 
