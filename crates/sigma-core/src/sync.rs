@@ -129,6 +129,20 @@ pub mod keys {
         (!o.is_empty() && !s.is_empty() && !s.contains('|')).then(|| (o.to_string(), s.to_string()))
     }
 
+    /// A learned Gaussian or neural function, per `(skill, weight offset)`.
+    pub const FUNCTION: &str = "function/";
+
+    pub fn function(skill: &str, offset: usize) -> String {
+        format!("{FUNCTION}{skill}#{offset}")
+    }
+
+    /// The `(skill, offset)` of a function key's suffix.
+    pub fn function_slot(suffix: &str) -> Option<(String, usize)> {
+        let (skill, offset) = suffix.rsplit_once('#')?;
+        (!skill.is_empty()).then_some(())?;
+        Some((skill.to_string(), offset.parse().ok()?))
+    }
+
     pub fn device(pubkey: &[u8; 32]) -> String {
         format!("{DEVICE}{}", crypto::to_hex(pubkey))
     }

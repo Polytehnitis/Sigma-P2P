@@ -4,6 +4,7 @@
 //! store can hand its whole [`SyncState`] to the user's other devices and merge theirs back.
 
 use crate::graph_memory::{self, ActionModel, LearnedModels};
+use crate::parametric;
 use crate::sync::{keys, next_clock, Register, Stamp, SyncReport, SyncState};
 use crate::{
     crypto, language, ActionManifest, EpisodicMemory, NodeIdentity, PredicateSchema, SemanticMemory, SigmaEngine,
@@ -186,6 +187,9 @@ impl FactorStore {
             for ((obs, state), table) in &engine.models.perceptions {
                 stamp(tx, &keys::perception(obs, state), Some(postcard::to_allocvec(table)?))?;
             }
+            for ((skill, offset), function) in &engine.models.functions {
+                stamp(tx, &keys::function(skill, *offset), Some(postcard::to_allocvec(function)?))?;
+            }
             Ok(())
         })
     }
@@ -342,6 +346,14 @@ impl FactorStore {
                 if let Some(table) = table {
                     engine.adopt_perception_model(&obs, &state, table);
                 }
+            } else if let Some((skill, offset)) = key.strip_prefix(keys::FUNCTION).and_then(keys::function_slot) {
+                let tx = self.db.begin_read()?;
+                let row = tx.open_table(SYNC)?.get(key.as_str())?.map(|g| g.value().to_vec());
+                let register = row.map(|b| postcard::from_bytes::<Register>(&b)).transpose()?;
+                let function = register.and_then(|r| r.value).and_then(|v| postcard::from_bytes(&v).ok());
+                if let Some(function) = function {
+                    engine.adopt_learned_function(&skill, offset, function);
+                }
             }
         }
         if report.memories_changed {
@@ -370,6 +382,8 @@ impl FactorStore {
         }
         if let Some(g) = memories.get("models")? {
             engine.models = LearnedModels::decode(g.value())?;
+            // Skills compiled before the restore get their learned functions too.
+            engine.apply_learned_functions();
         }
         let mut rows = Vec::new();
         for row in tx.open_table(SKILLS)?.iter()? {
@@ -541,6 +555,19 @@ fn apply_register(tx: &WriteTransaction, key: &str, value: Option<&[u8]>, own: &
                     || models.perceptions.contains_key(&(obs.clone(), state.clone()))
                 {
                     models.perceptions.insert((obs, state), table);
+                    t.insert("models", postcard::to_allocvec(&models)?.as_slice())?;
+                }
+            }
+        }
+    } else if let Some(slot) = key.strip_prefix(keys::FUNCTION) {
+        let function = value.and_then(|v| postcard::from_bytes::<crate::Function>(v).ok());
+        if let (Some(slot), Some(function)) = (keys::function_slot(slot), function) {
+            if parametric::function_is_valid(&function) {
+                let mut t = tx.open_table(MEMORIES)?;
+                let stored = t.get("models")?.map(|g| LearnedModels::decode(g.value())).transpose()?;
+                let mut models = stored.unwrap_or_default();
+                if models.functions.len() < parametric::MAX_LEARNED_FUNCTIONS || models.functions.contains_key(&slot) {
+                    models.functions.insert(slot, function);
                     t.insert("models", postcard::to_allocvec(&models)?.as_slice())?;
                 }
             }
