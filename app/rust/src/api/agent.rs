@@ -551,8 +551,15 @@ impl TryFrom<SpokenIntent> for language::Intent {
 /// Nothing is applied: the app acts on the returned intent.
 pub fn interpret_utterance(text: String, recognition_confidence: f32) -> Result<Interpretation> {
     let a = agent()?;
-    let predicates: Vec<PredicateSchema> =
-        a.engine.lock().unwrap().variables().iter().map(|v| v.schema.clone()).collect();
+    let predicates: Vec<PredicateSchema> = a
+        .engine
+        .lock()
+        .unwrap()
+        .variables()
+        .iter()
+        .map(|v| v.schema.clone())
+        .filter(|p| !p.name.starts_with('@'))
+        .collect();
     let i = language::interpret(&text, recognition_confidence, &predicates, &a.phrases.lock().unwrap());
     Ok(Interpretation {
         normalized: i.normalized,

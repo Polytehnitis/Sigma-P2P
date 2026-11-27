@@ -337,6 +337,9 @@ impl Program {
             if !plain(&p.name) {
                 return Err("invalid predicate name");
             }
+            if crate::graph_memory::internal(&p.name) {
+                return Err("reserved predicate name");
+            }
             let arg_types: Vec<&[String]> = p
                 .args
                 .iter()

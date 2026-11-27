@@ -130,12 +130,12 @@ impl SigmaEngine {
         })
     }
 
-    /// Our knowledge without our working memory, goals or memories.
+    /// Our knowledge without our working memory, goals, memories or learned models.
     fn perspective(&self) -> SigmaEngine {
         let mut e = SigmaEngine {
             vars: self.vars.clone(),
             index: self.index.clone(),
-            factors: self.factors.clone(),
+            factors: self.factors.iter().filter(|f| !f.memory).cloned().collect(),
             skills: self.skills.clone(),
             initial: self.initial.clone(),
             ..SigmaEngine::default()
@@ -161,8 +161,10 @@ impl SigmaEngine {
                 (fi, f.utility_score.max(0.01) * relevance * novelty)
             })
             .collect();
+        // Memories and models are always attended and take no part of the budget.
+        ranked.retain(|&(fi, _)| !self.factors[fi].memory);
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-        let mut mask = vec![false; self.factors.len()];
+        let mut mask: Vec<bool> = self.factors.iter().map(|f| f.memory).collect();
         ranked.iter().take(k).for_each(|&(fi, _)| mask[fi] = true);
         Some(mask)
     }

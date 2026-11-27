@@ -12,6 +12,7 @@
 pub mod actions;
 pub mod crypto;
 mod exact;
+pub mod graph_memory;
 pub mod language;
 pub mod memory;
 pub mod mind;
@@ -29,6 +30,7 @@ use std::sync::Arc;
 
 pub use actions::{ActionManifest, ActionSpec, ConfirmationGate, PendingAction, Undone};
 pub use crypto::NodeIdentity;
+pub use graph_memory::LearnedModels;
 pub use language::{Intent, Interpretation, PhraseBook, Route};
 pub use memory::{Episode, EpisodicMemory, SemanticMemory, SemanticRecall};
 pub use mind::{Appraisal, Emotion, MindModel, OtherAgent};
@@ -114,6 +116,9 @@ impl SkillPackage {
         if names.len() != self.predicates.len() {
             return Err("duplicate predicate");
         }
+        if self.predicates.iter().any(|p| graph_memory::internal(&p.name)) {
+            return Err("reserved predicate name");
+        }
         if !self.factor_values.iter().all(|v| v.is_finite() && (0.0..=MAX_FACTOR_VALUE).contains(v)) {
             return Err("factor value out of bounds");
         }
@@ -155,6 +160,8 @@ pub struct FactorNode {
     pub normal: Option<usize>,
     /// Analytic (piecewise-linear or Gaussian) form, evaluated at particle points.
     pub analytic: Option<Arc<program::Analytic>>,
+    /// Compiled from a memory or a learned model (see [`graph_memory`]), not from a skill.
+    pub memory: bool,
 }
 
 /// A broken chain: `missing_predicate` (reached from `goal`) has no skill linking it to an action.
@@ -289,6 +296,10 @@ pub struct SigmaEngine {
     safety: actions::ActionSafety,
     /// The state stack below the top state: substates still reasoning about an impasse.
     substates: Vec<Substate>,
+    /// Learned action and reward models (compiled into the graph each cycle).
+    pub models: LearnedModels,
+    /// The concepts `@Category` ranges over, in slot order.
+    category_names: Vec<String>,
 }
 
 impl SigmaEngine {
@@ -296,8 +307,14 @@ impl SigmaEngine {
         Self::default()
     }
 
+    /// The factors compiled from skills.
     pub fn factors(&self) -> &[FactorNode] {
-        &self.factors
+        &self.factors[..self.factors.iter().position(|f| f.memory).unwrap_or(self.factors.len())]
+    }
+
+    /// The factors compiled from memories and learned models (see [`graph_memory`]).
+    pub fn memory_factors(&self) -> &[FactorNode] {
+        &self.factors[self.factors().len()..]
     }
 
     pub fn variables(&self) -> &[VariableNode] {
@@ -363,9 +380,12 @@ impl SigmaEngine {
                 learnable: g.learnable,
                 normal: g.normal,
                 analytic: g.analytic,
+                memory: false,
             });
         }
         self.skills.push(skill);
+        // Memory factors stay after the skill factors.
+        self.factors.sort_by_key(|f| f.memory);
         self.trace = None;
         Ok(())
     }
@@ -555,19 +575,6 @@ impl SigmaEngine {
         wm
     }
 
-    /// Semantic memory joins elaboration: features it predicts for the current object, for
-    /// predicates without evidence or percepts, enter the perception buffer.
-    fn complete_from_semantic_memory(&mut self) {
-        let Some(recall) = self.semantic.recall(&self.working_memory()) else { return };
-        for (feature, dist) in recall.predicted {
-            if let Some(&v) = self.index.get(&feature) {
-                if self.vars[v].evidence.is_none() && dist.len() == self.vars[v].schema.domain_size {
-                    self.percepts.entry(v).or_insert(dist);
-                }
-            }
-        }
-    }
-
     /// Pushes a top-level goal (registering it as a binary `Goal` predicate if unknown).
     pub fn push_goal(&mut self, name: &str) {
         if !self.index.contains_key(name) {
@@ -590,6 +597,11 @@ impl SigmaEngine {
     /// One decision cycle: elaboration (message passing to quiescence, subgoaling), then
     /// decision (select an action, or reach a none / tie / no-change impasse).
     pub fn cognitive_cycle(&mut self) -> CycleOutcome {
+        // Memories and models join the graph; the last action's model learns what followed it.
+        self.rebuild_memory_factors();
+        if let Some(a) = self.last.as_ref().and_then(|l| l.action) {
+            self.learn_action_models(a);
+        }
         // Appraise what changed since the last cycle, before elaborating on it.
         let open = self.goal_stack.len();
         let progress = self.pop_satisfied_goals().len() as f32 / open.max(1) as f32;
@@ -608,14 +620,14 @@ impl SigmaEngine {
             self.appraisal = appraisal.label(false);
             return CycleOutcome { appraisal: self.appraisal.clone(), ..CycleOutcome::default() };
         };
-        self.complete_from_semantic_memory();
         self.attended = self.attend(&surprise);
         let elaboration = self.elaborate(root);
         let wm: Vec<Option<usize>> = self.vars.iter().map(|n| n.evidence).collect();
         let last = self.last.as_ref().map(|l| (l.action, l.wm.clone(), l.goals.clone()));
         let goals = self.goal_stack.clone();
-        let repeats =
-            |a: usize| last.as_ref().is_some_and(|(action, w, g)| *action == Some(a) && *w == wm && *g == goals);
+        let repeats = |a: usize| {
+            last.as_ref().is_some_and(|(action, w, g)| *action == Some(a) && same_evidence(w, &wm) && *g == goals)
+        };
         let substate::Decision { selected, impasse, substate } = self.decide(&elaboration, repeats);
         let substate::Elaboration { p1, p2, top, top_factors, .. } = elaboration;
         let decision_impasse = impasse.map(|(kind, cands, resolved)| DecisionImpasse {
@@ -654,7 +666,7 @@ impl SigmaEngine {
         let attended_skills = match &self.attended {
             Some(mask) => {
                 let mut names: Vec<String> = (0..self.factors.len())
-                    .filter(|&f| mask[f])
+                    .filter(|&f| mask[f] && !self.factors[f].memory)
                     .map(|f| self.factors[f].skill.skill_name.clone())
                     .collect();
                 names.sort();
@@ -672,6 +684,7 @@ impl SigmaEngine {
                 .vars
                 .iter()
                 .enumerate()
+                .filter(|(_, n)| !graph_memory::internal(&n.schema.name))
                 .map(|(v, n)| {
                     let p = if n.schema.role == PredicateRole::Subgoal { &p1[v] } else { &p2[v] };
                     (n.schema.name.clone(), p.clone())
@@ -718,23 +731,22 @@ impl SigmaEngine {
             .collect()
     }
 
-    /// Fraction of working memory that the closest episode shares.
+    /// Fraction of working memory that the recalled episode shares.
     fn familiarity(&self) -> f32 {
         let wm = self.working_memory();
-        let Some(r) = self.episodic.recall(&self.goal_stack, &wm, |_| true) else { return 0.0 };
+        let Some((episode, _)) = self.recall_episode(false) else { return 0.0 };
         if wm.is_empty() {
             return 0.0;
         }
-        wm.iter().filter(|kv| r.episode.state.contains(kv)).count() as f32 / wm.len() as f32
+        wm.iter().filter(|kv| episode.state.contains(kv)).count() as f32 / wm.len() as f32
     }
 
-    /// The action of the best-matching past episode that was rewarded, if it is still one of
-    /// this node's actions.
+    /// The action of the episode recalled for this situation with a reward as part of the cue,
+    /// if that episode was in fact rewarded and its action is still one of this node's actions.
     fn recall_action(&self) -> Option<usize> {
-        let is_action = |a: &str| self.index.get(a).filter(|&&v| self.vars[v].schema.role == PredicateRole::Action);
-        let ok = |e: &Episode| e.reward > 0.0 && e.action.as_deref().is_some_and(|a| is_action(a).is_some());
-        let recall = self.episodic.recall(&self.goal_stack, &self.working_memory(), ok)?;
-        is_action(recall.episode.action.as_deref()?).copied()
+        let (episode, _) = self.recall_episode(true)?;
+        let a = *self.index.get(episode.action.as_deref()?)?;
+        (episode.reward > 0.0 && self.vars[a].schema.role == PredicateRole::Action).then_some(a)
     }
 
     /// Walks the chain from the root goal; reports the first open (sub)goal with no
@@ -791,6 +803,9 @@ impl SigmaEngine {
         let reward = if reward.is_finite() { reward.clamp(-1.0, 1.0) } else { 0.0 };
         self.episodic.reward_last(reward);
         self.last_reward = reward;
+        if let Some(a) = self.last.as_ref().and_then(|l| l.action) {
+            self.learn_reward_model(a, reward);
+        }
         let Some(trace) = self.trace.as_ref() else { return Vec::new() };
         let mut attributions = Vec::new();
         let mut touched = HashSet::new();
@@ -836,44 +851,9 @@ impl SigmaEngine {
                     None => self.belief(v, &prior, &msgs, Some((fi, s))),
                 })
                 .collect();
-            let f = &mut self.factors[fi];
-            let groups = |idx: &[usize]| -> usize {
-                // Rows that are normalized together: all slots except `normal`, or one group.
-                f.normal
-                    .map_or(0, |n| (0..idx.len()).filter(|&j| j != n).fold(0, |a, j| a * f.table.shape()[j] + idx[j]))
-            };
-            let n_groups = f.normal.map_or(1, |n| f.table.len() / f.table.shape()[n]);
-            let (mut mass, mut z, mut q_sum) = (vec![0.0f32; n_groups], 0.0f32, 0.0f32);
-            let q: Vec<f32> = f
-                .table
-                .indexed_iter()
-                .map(|(idx, &w)| {
-                    let q: f32 = idx.slice().iter().enumerate().map(|(j, &x)| inbound[j][x]).product();
-                    mass[groups(idx.slice())] += w;
-                    z += w * q;
-                    q_sum += q;
-                    q
-                })
-                .collect();
-            if z <= 0.0 || !z.is_finite() {
-                continue;
-            }
+            let Some(z) = gradient_step(&mut self.factors[fi], &inbound, rate) else { continue };
             log_z += z.ln();
-            // Step on p = w / mass, then renormalize each group and restore its mass.
-            let mut stepped: Vec<(usize, f32)> = f
-                .table
-                .indexed_iter()
-                .zip(&q)
-                .map(|((idx, &w), &q)| {
-                    let g = groups(idx.slice());
-                    (g, w / mass[g] + rate * q / q_sum)
-                })
-                .collect();
-            let mut sums = vec![0.0f32; n_groups];
-            stepped.iter().for_each(|&(g, p)| sums[g] += p);
-            stepped.iter_mut().for_each(|(g, p)| *p = *p / sums[*g] * mass[*g]);
-            f.table.iter_mut().zip(stepped).for_each(|(w, (_, p))| *w = p.clamp(MIN_WEIGHT, MAX_FACTOR_VALUE));
-            touched.insert(f.skill.skill_name.clone());
+            touched.insert(self.factors[fi].skill.skill_name.clone());
         }
         self.tie_parameters(&touched);
         self.trace = None;
@@ -944,7 +924,7 @@ impl SigmaEngine {
     }
 
     fn factors_of(&self, v: usize) -> impl Iterator<Item = usize> + '_ {
-        (0..self.factors.len()).filter(move |&f| self.factors[f].vars.contains(&v))
+        (0..self.factors.len()).filter(move |&f| !self.factors[f].memory && self.factors[f].vars.contains(&v))
     }
 
     /// Breadth-first factors and variables connected to `start` (variables in BFS order).
@@ -1070,6 +1050,55 @@ impl SigmaEngine {
     }
 }
 
+/// One gradient step on factor `f` given its incoming messages `inbound` (one per slot): the
+/// normalized function moves `rate` along the normalized product of the messages, then each
+/// group of entries normalized together (per row of the `normal` slot, else the whole table)
+/// is renormalized and keeps its total weight. Returns the local partition function before the
+/// step, or `None` when it is zero.
+pub(crate) fn gradient_step(f: &mut FactorNode, inbound: &[Vec<f32>], rate: f32) -> Option<f32> {
+    let groups = |idx: &[usize]| -> usize {
+        // Rows that are normalized together: all slots except `normal`, or one group.
+        f.normal.map_or(0, |n| (0..idx.len()).filter(|&j| j != n).fold(0, |a, j| a * f.table.shape()[j] + idx[j]))
+    };
+    let n_groups = f.normal.map_or(1, |n| f.table.len() / f.table.shape()[n]);
+    let (mut mass, mut z, mut q_sum) = (vec![0.0f32; n_groups], 0.0f32, 0.0f32);
+    let q: Vec<f32> = f
+        .table
+        .indexed_iter()
+        .map(|(idx, &w)| {
+            let q: f32 = idx.slice().iter().enumerate().map(|(j, &x)| inbound[j][x]).product();
+            mass[groups(idx.slice())] += w;
+            z += w * q;
+            q_sum += q;
+            q
+        })
+        .collect();
+    if z <= 0.0 || !z.is_finite() {
+        return None;
+    }
+    // Step on p = w / mass, then renormalize each group and restore its mass.
+    let mut stepped: Vec<(usize, f32)> = f
+        .table
+        .indexed_iter()
+        .zip(&q)
+        .map(|((idx, &w), &q)| {
+            let g = groups(idx.slice());
+            (g, w / mass[g] + rate * q / q_sum)
+        })
+        .collect();
+    let mut sums = vec![0.0f32; n_groups];
+    stepped.iter().for_each(|&(g, p)| sums[g] += p);
+    stepped.iter_mut().for_each(|(g, p)| *p = *p / sums[*g] * mass[*g]);
+    f.table.iter_mut().zip(stepped).for_each(|(w, (_, p))| *w = p.clamp(MIN_WEIGHT, MAX_FACTOR_VALUE));
+    Some(z)
+}
+
+/// Whether two evidence snapshots agree (variables registered since count as unobserved).
+fn same_evidence(a: &[Option<usize>], b: &[Option<usize>]) -> bool {
+    let n = a.len().max(b.len());
+    (0..n).all(|i| a.get(i).copied().flatten() == b.get(i).copied().flatten())
+}
+
 fn one_hot(x: usize, d: usize) -> Vec<f32> {
     (0..d).map(|i| if i == x { 1.0 } else { 0.0 }).collect()
 }
@@ -1093,6 +1122,8 @@ mod tests_actions;
 mod tests_continuous;
 #[cfg(test)]
 mod tests_exact;
+#[cfg(test)]
+mod tests_graph_memory;
 #[cfg(test)]
 mod tests_language;
 #[cfg(test)]
