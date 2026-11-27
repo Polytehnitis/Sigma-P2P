@@ -2,6 +2,7 @@
 //! from Rust's side and run on flutter_rust_bridge worker threads.
 
 use anyhow::{anyhow, Context, Result};
+use sigma_core::substate::offered_to_peers;
 use sigma_core::{
     crypto, language, ActionManifest, ActionSpec, ConfirmationGate, Emotion as CoreEmotion, FactorStore, ImpasseKind,
     NodeIdentity, PredicateRole, PredicateSchema, SigmaEngine, SkillPackage, QUARANTINE,
@@ -196,7 +197,7 @@ pub fn init_agent(storage_dir: String, swarm_passphrase: String, bootstrap_peers
     engine.preferences = store.load_preferences().map_err(err)?;
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     let mut node = rt.block_on(SkillMeshNode::spawn(&swarm_passphrase, peers, store.clone()))?;
-    for skill in &restored {
+    for skill in restored.iter().filter(|s| offered_to_peers(s)) {
         node.publish_local_skill(skill.clone())?;
     }
     let mut downloads = std::mem::replace(&mut node.downloaded_skills, tokio::sync::mpsc::channel(1).1);
@@ -221,7 +222,7 @@ pub fn init_agent(storage_dir: String, swarm_passphrase: String, bootstrap_peers
                 }
             }
             let compiled = s.refresh_engine(&mut e.lock().unwrap(), &report).unwrap_or_default();
-            for skill in compiled {
+            for skill in compiled.into_iter().filter(offered_to_peers) {
                 let _ = n.publish_local_skill(skill);
             }
         }
@@ -256,10 +257,14 @@ pub fn run_cognitive_step(evidence: Vec<Evidence>, active_goals: Vec<String>) ->
             engine.push_goal(goal.trim());
         }
         let out = engine.cognitive_cycle();
-        // A learned chunk is kept and follows the user to their paired devices (it describes
-        // the user's own situations, so it is not offered to the swarm).
+        // A learned chunk is kept and follows the user to their paired devices. A variablized
+        // one names none of the user's own things, so it is offered to the swarm too; a ground
+        // one describes the user's own situations and is not.
         if let Some(chunk) = &out.chunk {
             a.store.save_skill(chunk).map_err(err)?;
+            if offered_to_peers(chunk) {
+                a.node.publish_local_skill(chunk.clone()).map_err(err)?;
+            }
         }
         // Persisted every step so paired devices see the latest memories and goals.
         a.store.save_memories(&engine).map_err(err)?;

@@ -90,7 +90,8 @@ async fn main() -> Result<()> {
     let mut engine = SigmaEngine::new();
     let restored = store.restore_engine(&mut engine).map_err(|e| anyhow!(e))?;
     let mut node = SkillMeshNode::spawn(&args.swarm, args.bootstrap_peers, store.clone()).await?;
-    for skill in restored.iter().cloned() {
+    // Ground chunks describe the user's own situations: they stay on the user's devices.
+    for skill in restored.iter().filter(|s| sigma_core::substate::offered_to_peers(s)).cloned() {
         node.publish_local_skill(skill)?;
     }
     println!("EndpointId:          {}", node.node_id());
@@ -127,7 +128,8 @@ async fn main() -> Result<()> {
                 node.publish_local_skill(skill)?;
             }
             Some(report) = node.synced.recv() => {
-                for skill in store.refresh_engine(&mut engine, &report).map_err(|e| anyhow!(e))? {
+                let compiled = store.refresh_engine(&mut engine, &report).map_err(|e| anyhow!(e))?;
+                for skill in compiled.into_iter().filter(sigma_core::substate::offered_to_peers) {
                     node.publish_local_skill(skill)?;
                 }
                 let from = &crypto::to_hex(&report.from)[..12];

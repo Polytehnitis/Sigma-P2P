@@ -16,6 +16,7 @@
 //! is deleted.
 
 use crate::graph_memory::{next_name, transition_name, Q_WEIGHT, REWARD_WEIGHT};
+use crate::program::{Conditional, Function, Pattern, PredicateDef, Program, Skill, SkillBody, Term, TypeDef};
 use crate::{
     ImpasseKind, NodeIdentity, PatternKind, PredicateRole, PredicateSchema, SigmaEngine, SkillPackage, MAX_TABLE_LEN,
     SUBGOAL_PROMOTION, TIE_MARGIN,
@@ -39,6 +40,22 @@ pub const MAX_CHUNK_CONDITIONS: usize = 6;
 pub const CHUNK_WEIGHT: f32 = 10.0;
 /// Skill names of chunks start with this.
 pub const CHUNK_PREFIX: &str = "chunk:";
+
+/// Whether a skill may be offered to the swarm: any skill but a chunk that is not
+/// [`shareable_chunk`] (a ground chunk describes the user's own situations, so it only follows
+/// the user to their paired devices).
+pub fn offered_to_peers(skill: &Skill) -> bool {
+    !skill.skill_name.starts_with(CHUNK_PREFIX) || shareable_chunk(skill)
+}
+
+/// Whether `skill` is a chunk general enough to offer to peers: a variablized rule whose
+/// patterns name no constant, so it says nothing about the user's own things.
+pub fn shareable_chunk(skill: &Skill) -> bool {
+    let (SkillBody::Program(p) | SkillBody::Extended(p, _)) = &skill.body else { return false };
+    skill.skill_name.starts_with(CHUNK_PREFIX)
+        && p.conditionals.iter().flat_map(|c| &c.patterns).any(|pat| !pat.args.is_empty())
+        && p.conditionals.iter().flat_map(|c| &c.patterns).all(|pat| pat.args.iter().all(|t| matches!(t, Term::Var(_))))
+}
 
 /// One level of the state stack below the top state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -113,7 +130,13 @@ impl SigmaEngine {
 
         // Elaboration 1: which subgoal states do the active goals call for? A subgoal observed
         // false is still needed, so its observation does not hide the need.
-        let goals = |v: usize| if stacked.contains(&v) { Some(1) } else { None };
+        // Goals not on the stack are not desired, so they call for nothing (an unstacked
+        // `G(pc)` must not promote `Ready(pc)` because a program grounds both).
+        let goals = |v: usize| match self.vars[v].schema.role {
+            _ if stacked.contains(&v) => Some(1),
+            PredicateRole::Goal if self.vars[v].evidence.is_none() => Some(0),
+            _ => None,
+        };
         let observed_false: Vec<usize> = (0..self.vars.len())
             .filter(|&v| self.vars[v].schema.role == PredicateRole::Subgoal && self.vars[v].evidence == Some(0))
             .collect();
@@ -140,6 +163,7 @@ impl SigmaEngine {
         let p2 = self.infer(|v| match self.vars[v].schema.role {
             _ if stacked.contains(&v) => Some(1),
             PredicateRole::Subgoal => Some(0),
+            PredicateRole::Goal if self.vars[v].evidence.is_none() => Some(0),
             _ => None,
         });
         let top = self.index[self.goal_stack.last().expect("root is on the stack")];
@@ -443,12 +467,20 @@ impl SigmaEngine {
     }
 
     /// Chunking, as in Sigma: compiles what a substate concluded into a rule, so the same
-    /// situation is decided at once next time, without an impasse. The rule is a table skill
-    /// over the (sub)goal the impasse arose for, the context working memory holds that the
-    /// decision depended on (observed context predicates linked to that goal, to the root goal
-    /// or to the action, at most [`MAX_CHUNK_CONDITIONS`]), and the action. Its one strong
-    /// entry is that situation with the action taken. Returned unsigned.
-    pub fn chunk(&self, top: usize, action: usize) -> Option<SkillPackage> {
+    /// situation is decided at once next time, without an impasse. The rule is over the
+    /// (sub)goal the impasse arose for, the context working memory holds that the decision
+    /// depended on (observed context predicates linked to that goal, to the root goal or to the
+    /// action, at most [`MAX_CHUNK_CONDITIONS`]), and the action. Its one strong entry is that
+    /// situation with the action taken. Returned unsigned.
+    ///
+    /// As in Sigma, the rule is *variablized* where it can be: when the atoms carry arguments
+    /// (`Backed(nas)`, `Mounted(nas)`, `Mount(nas)`) declared by a program skill, each constant
+    /// becomes a variable of its type, so the rule is a v2 conditional
+    /// `Backed(X1), Mounted(X1) -> Mount(X1)` that applies to every value of the type, not only
+    /// to the one it was learned for. Goal and conditions are read-only patterns and the action
+    /// is written, as in a rule. Atoms without arguments stay as they are; a chunk with no
+    /// argument at all is a v1 table over the ground atoms, as before.
+    pub fn chunk(&self, top: usize, action: usize) -> Option<Skill> {
         let root = self.index.get(self.goal_stack.first()?).copied()?;
         let mut conditions: Vec<usize> = Vec::new();
         for start in [top, root, action] {
@@ -467,9 +499,6 @@ impl SigmaEngine {
         conditions.sort_by(|&a, &b| self.vars[a].schema.name.cmp(&self.vars[b].schema.name));
         conditions.truncate(MAX_CHUNK_CONDITIONS);
         let slots: Vec<usize> = [top].into_iter().chain(conditions.iter().copied()).chain([action]).collect();
-        let predicates: Vec<PredicateSchema> = slots.iter().map(|&v| self.vars[v].schema.clone()).collect();
-        let factor_shape: Vec<usize> = predicates.iter().map(|p| p.domain_size).collect();
-        let len = factor_shape.iter().try_fold(1usize, |a, &d| a.checked_mul(d)).filter(|&n| n <= MAX_TABLE_LEN)?;
         // A goal is decided on as desired, an open subgoal as not yet holding.
         let goal_value = usize::from(self.vars[top].schema.role == PredicateRole::Goal);
         let values: Vec<usize> = [goal_value]
@@ -477,13 +506,30 @@ impl SigmaEngine {
             .chain(conditions.iter().map(|&v| self.vars[v].evidence.expect("observed")))
             .chain([1])
             .collect();
+        // A variablized rule also tests the root goal it served, desired: grounded over every
+        // constant, it must fire only for the instance whose goal is on the stack.
+        let (general_slots, general_values) = if root == top {
+            (slots.clone(), values.clone())
+        } else {
+            let mut s = slots.clone();
+            let mut x = values.clone();
+            s.insert(1, root);
+            x.insert(1, 1);
+            (s, x)
+        };
+        if let Some(general) = self.general_chunk(&general_slots, &general_values) {
+            return Some(general);
+        }
+        let predicates: Vec<PredicateSchema> = slots.iter().map(|&v| self.vars[v].schema.clone()).collect();
+        let factor_shape: Vec<usize> = predicates.iter().map(|p| p.domain_size).collect();
+        let len = factor_shape.iter().try_fold(1usize, |a, &d| a.checked_mul(d)).filter(|&n| n <= MAX_TABLE_LEN)?;
         let mut factor_values = vec![1.0; len];
         let flat = values.iter().zip(&factor_shape).fold(0, |acc, (x, d)| acc * d + x);
         factor_values[flat] = CHUNK_WEIGHT;
         let situation: Vec<String> =
             slots.iter().zip(&values).map(|(&v, x)| format!("{}={x}", self.vars[v].schema.name)).collect();
         let tag = blake3::hash(situation.join(",").as_bytes()).to_hex();
-        Some(SkillPackage {
+        Some(Skill::from(SkillPackage {
             skill_name: format!(
                 "{CHUNK_PREFIX}{}->{}#{}",
                 self.vars[top].schema.name,
@@ -496,20 +542,150 @@ impl SigmaEngine {
             predicates,
             factor_shape,
             factor_values,
+        }))
+    }
+
+    /// The declaration of the predicate behind ground atom `atom` and the types of its
+    /// arguments and value, from the program skills that declare it.
+    fn declaration(&self, atom: &str) -> Option<(PredicateDef, Vec<TypeDef>)> {
+        let base = crate::atom_base(atom);
+        self.skills.iter().find_map(|s| {
+            let (SkillBody::Program(p) | SkillBody::Extended(p, _)) = &s.body else { return None };
+            let def = p.predicates.iter().find(|d| d.name == base)?;
+            let types: Option<Vec<TypeDef>> = def
+                .args
+                .iter()
+                .chain(def.value_type.as_ref())
+                .map(|t| p.types.iter().find(|ty| &ty.name == t).cloned())
+                .collect();
+            Some((def.clone(), types?))
         })
     }
 
+    /// The variablized chunk over `slots` (goal, conditions, action) holding `values`, when at
+    /// least one atom has arguments and every such atom's predicate is declared by a program.
+    fn general_chunk(&self, slots: &[usize], values: &[usize]) -> Option<Skill> {
+        let mut types: Vec<TypeDef> = Vec::new();
+        let mut predicates: Vec<PredicateDef> = Vec::new();
+        let mut patterns: Vec<Pattern> = Vec::new();
+        // Each (constant, type) becomes one variable, in order of appearance.
+        let mut variables: Vec<(String, String)> = Vec::new();
+        let add_type = |types: &mut Vec<TypeDef>, t: TypeDef| -> Option<()> {
+            match types.iter().find(|x| x.name == t.name) {
+                Some(old) if *old != t => None,
+                Some(_) => Some(()),
+                None => {
+                    types.push(t);
+                    Some(())
+                }
+            }
+        };
+        for (i, &v) in slots.iter().enumerate() {
+            let schema = &self.vars[v].schema;
+            let kind = if i + 1 == slots.len() { PatternKind::Action } else { PatternKind::Condition };
+            let base = crate::atom_base(&schema.name);
+            let args: Vec<&str> = match schema.name.strip_prefix(base).and_then(|r| r.strip_prefix('(')) {
+                Some(rest) => rest.strip_suffix(')')?.split(',').collect(),
+                None => Vec::new(),
+            };
+            let def = if args.is_empty() {
+                // An atom without arguments: declared as itself (a boolean, or over a value
+                // type named after its domain).
+                let value_type = (schema.domain_size != 2).then(|| {
+                    let name = format!("chunk-values-{}", schema.domain_size);
+                    (name.clone(), TypeDef::range(&name, 0, schema.domain_size as i32))
+                });
+                if let Some((_, t)) = &value_type {
+                    add_type(&mut types, t.clone())?;
+                }
+                PredicateDef {
+                    name: schema.name.clone(),
+                    role: schema.role,
+                    args: Vec::new(),
+                    value_type: value_type.map(|v| v.0),
+                }
+            } else {
+                let (def, def_types) = self.declaration(&schema.name)?;
+                if def.args.len() != args.len() || def.role != schema.role {
+                    return None;
+                }
+                for t in def_types {
+                    add_type(&mut types, t)?;
+                }
+                def
+            };
+            let terms: Vec<Term> = args
+                .iter()
+                .zip(&def.args)
+                .map(|(&c, ty)| {
+                    let key = (c.to_string(), ty.clone());
+                    let i = variables.iter().position(|k| *k == key).unwrap_or_else(|| {
+                        variables.push(key);
+                        variables.len() - 1
+                    });
+                    Term::Var(format!("X{}", i + 1))
+                })
+                .collect();
+            match predicates.iter().find(|d| d.name == def.name) {
+                Some(old) if *old != def => return None,
+                Some(_) => {}
+                None => predicates.push(def.clone()),
+            }
+            patterns.push(Pattern { kind, predicate: def.name.clone(), args: terms });
+        }
+        if variables.is_empty() {
+            return None;
+        }
+        let dims: Vec<usize> = slots.iter().map(|&v| self.vars[v].schema.domain_size).collect();
+        let len = dims.iter().try_fold(1usize, |a, &d| a.checked_mul(d)).filter(|&n| n <= MAX_TABLE_LEN)?;
+        let mut table = vec![1.0; len];
+        table[values.iter().zip(&dims).fold(0, |acc, (x, d)| acc * d + x)] = CHUNK_WEIGHT;
+        // Named after the generalized situation, so the same rule learned from other constants
+        // is the same chunk.
+        let shown = |p: &Pattern| {
+            let args: Vec<String> = p
+                .args
+                .iter()
+                .map(|t| match t {
+                    Term::Var(x) => x.clone(),
+                    _ => String::new(),
+                })
+                .collect();
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            crate::program::atom_name(&p.predicate, &refs)
+        };
+        let situation: Vec<String> = patterns.iter().zip(values).map(|(p, x)| format!("{}={x}", shown(p))).collect();
+        let tag = blake3::hash(situation.join(",").as_bytes()).to_hex();
+        let name = format!(
+            "{CHUNK_PREFIX}{}->{}#{}",
+            shown(&patterns[0]),
+            shown(patterns.last().expect("an action")),
+            &tag[..12]
+        );
+        let program = Program {
+            types,
+            predicates,
+            conditionals: vec![Conditional {
+                name: "chunk".into(),
+                patterns,
+                function_vars: Vec::new(),
+                function: Function::Table(table),
+                learnable: false,
+                normal: None,
+            }],
+        };
+        program.ground().ok()?;
+        Some(Skill::program(&name, 1, program))
+    }
+
     /// Signs a chunk with `author` and compiles it as a skill.
-    pub fn learn_chunk(
-        &mut self,
-        author: &NodeIdentity,
-        mut chunk: SkillPackage,
-    ) -> Result<SkillPackage, &'static str> {
+    pub fn learn_chunk(&mut self, author: &NodeIdentity, chunk: impl Into<Skill>) -> Result<Skill, &'static str> {
+        let mut chunk = chunk.into();
         if !chunk.skill_name.starts_with(CHUNK_PREFIX) {
             return Err("not a chunk");
         }
         chunk.version = self.export_skill(&chunk.skill_name).map_or(1, |s| s.version + 1);
-        author.sign_skill(&mut chunk);
+        author.sign(&mut chunk);
         self.compile_skill(chunk.clone())?;
         Ok(chunk)
     }

@@ -189,10 +189,13 @@ fn settled_substates_are_chunked_into_signed_rules() {
     assert!(chunk.skill_name.starts_with(crate::substate::CHUNK_PREFIX));
     assert_eq!(chunk.validate(), Ok(()));
     assert_eq!(chunk.author_pubkey, id.author_pubkey());
-    let names: Vec<&str> = chunk.predicates.iter().map(|p| p.name.as_str()).collect();
+    // No atom has arguments, so the chunk is a ground table, and it is not offered to peers.
+    assert!(!crate::substate::shareable_chunk(&chunk));
+    let table = chunk.as_v1().expect("a ground chunk");
+    let names: Vec<&str> = table.predicates.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, ["Ready", "Sunny", "A"]);
     // Its strong entry is the situation: Ready still open, Sunny observed, A taken.
-    assert_eq!(chunk.factor_values[0b011], crate::substate::CHUNK_WEIGHT);
+    assert_eq!(table.factor_values[0b011], crate::substate::CHUNK_WEIGHT);
 
     // Next time the same situation is decided at once: no impasse, no substate.
     engine.goal_stack = vec!["G".into()];
@@ -223,4 +226,102 @@ fn chunks_without_an_author_are_proposed_unsigned() {
     assert_eq!(signed_chunk.validate(), Ok(()));
     assert_eq!(fresh.cognitive_cycle().decision_impasse, None);
     assert!(fresh.learn_chunk(&id, crate::tests::skill_sync(&id)).is_err(), "only chunks");
+}
+
+/// [`two_step_sunny`] over devices: `G(d)` needs `Ready(d)`, and `A(d)` readies it.
+fn devices(id: &NodeIdentity, goal: &str) -> SigmaEngine {
+    use crate::program::*;
+    let pred = |name: &str, role, args: &[&str]| PredicateDef {
+        name: name.into(),
+        role,
+        args: args.iter().map(|a| a.to_string()).collect(),
+        value_type: None,
+    };
+    let pat = |kind, predicate: &str, args: &[&str]| Pattern {
+        kind,
+        predicate: predicate.into(),
+        args: args.iter().map(|a| Term::Var(a.to_string())).collect(),
+    };
+    let cond = |name: &str, patterns: Vec<Pattern>, table: Vec<f32>| Conditional {
+        name: name.into(),
+        patterns,
+        function_vars: Vec::new(),
+        function: Function::Table(table),
+        learnable: false,
+        normal: None,
+    };
+    use PatternKind::{Condact as C, Condition as R};
+    let program = Program {
+        types: vec![TypeDef::symbolic("Device", &["nas", "phone", "pc"])],
+        predicates: vec![
+            pred("G", Goal, &["Device"]),
+            pred("Ready", Subgoal, &["Device"]),
+            pred("A", Action, &["Device"]),
+            pred("B", Action, &["Device"]),
+            pred("Sunny", Context, &[]),
+        ],
+        conditionals: vec![
+            cond("needs", vec![pat(C, "G", &["x"]), pat(C, "Ready", &["x"])], vec![1.0, 1.0, 1.0, 10.0]),
+            cond("a", vec![pat(C, "Ready", &["x"]), pat(C, "A", &["x"])], vec![4.0, 1.0, 1.0, 4.0]),
+            cond("b", vec![pat(C, "Ready", &["x"]), pat(C, "B", &["x"])], vec![4.0, 2.0, 1.0, 1.0]),
+            cond("weather", vec![pat(R, "Ready", &["x"]), pat(R, "Sunny", &[])], vec![1.0; 4]),
+        ],
+    };
+    let mut skill = Skill::program("devices", 1, program);
+    id.sign(&mut skill);
+    let mut engine = SigmaEngine::new();
+    engine.compile_skill(skill).unwrap();
+    engine.set_evidence("Sunny", 1).unwrap();
+    engine.push_goal(goal);
+    engine
+}
+
+#[test]
+fn chunks_are_variablized_and_apply_to_other_constants() {
+    let id = NodeIdentity::generate();
+    let mut engine = devices(&id, "G(nas)");
+    engine.cognitive_cycle();
+    let out = engine.cognitive_cycle();
+    assert_eq!(out.selected_action.as_deref(), Some("A(nas)"));
+    let chunk = out.chunk.expect("chunked");
+    // Learned for the NAS, the rule names no device: Ready(X1), G(X1), Sunny -> A(X1).
+    let SkillBody::Program(p) = &chunk.body else { panic!("a variablized chunk is a program: {chunk:?}") };
+    let c = &p.conditionals[0];
+    let shown: Vec<(PatternKind, &str, &[Term])> =
+        c.patterns.iter().map(|p| (p.kind, p.predicate.as_str(), p.args.as_slice())).collect();
+    let x1 = [Term::Var("X1".into())];
+    assert_eq!(
+        shown,
+        [
+            (PatternKind::Condition, "Ready", &x1[..]),
+            (PatternKind::Condition, "G", &x1[..]),
+            (PatternKind::Condition, "Sunny", &[][..]),
+            (PatternKind::Action, "A", &x1[..]),
+        ]
+    );
+    assert!(chunk.skill_name.starts_with("chunk:Ready(X1)->A(X1)#"), "{}", chunk.skill_name);
+    assert!(crate::substate::shareable_chunk(&chunk));
+    assert!(crate::substate::offered_to_peers(&chunk));
+    // A peer stuck on any device's goal finds it in the swarm.
+    assert!(chunk.mentions("A(pc)") && chunk.mentions("Ready(phone)"));
+    // It generalizes: a peer with the goal for the phone decides at once, with no impasse.
+    let mut signed_chunk = chunk.clone();
+    id.sign(&mut signed_chunk);
+    assert_eq!(signed_chunk.validate(), Ok(()));
+    let mut peer = devices(&id, "G(phone)");
+    assert_eq!(peer.cognitive_cycle().decision_impasse.map(|d| d.kind), Some(ImpasseKind::None));
+    let mut peer = devices(&id, "G(phone)");
+    peer.compile_skill(signed_chunk.clone()).unwrap();
+    let out = peer.cognitive_cycle();
+    assert_eq!(out.selected_action.as_deref(), Some("A(phone)"));
+    assert_eq!(out.decision_impasse, None);
+    // But only where its condition holds.
+    let mut cloudy = devices(&id, "G(pc)");
+    cloudy.compile_skill(signed_chunk.clone()).unwrap();
+    cloudy.set_evidence("Sunny", 0).unwrap();
+    assert_eq!(cloudy.cognitive_cycle().decision_impasse.map(|d| d.kind), Some(ImpasseKind::None));
+    // The same rule learned from another device is the same chunk.
+    let mut again = devices(&id, "G(pc)");
+    again.cognitive_cycle();
+    assert_eq!(again.cognitive_cycle().chunk.map(|c| c.skill_name), Some(chunk.skill_name));
 }
