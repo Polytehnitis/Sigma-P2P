@@ -544,6 +544,26 @@ impl Plm {
         }
     }
 
+    /// The mean and variance of a one-dimensional density (exact for its linear pieces).
+    pub fn mean_variance(&self) -> (f64, f64) {
+        let b = &self.bounds[0];
+        let (mut m0, mut m1, mut m2) = (0.0, 0.0, 0.0);
+        for (k, w) in b.windows(2).enumerate() {
+            let (p, q) = (w[0], w[1]);
+            let (c0, c1) = (self.coef[2 * k], self.coef[2 * k + 1]);
+            let pw = |e: i32| q.powi(e) - p.powi(e);
+            m0 += c0 * pw(1) + c1 * pw(2) / 2.0;
+            m1 += c0 * pw(2) / 2.0 + c1 * pw(3) / 3.0;
+            m2 += c0 * pw(3) / 3.0 + c1 * pw(4) / 4.0;
+        }
+        if m0 <= EPS {
+            let mid = (b[0] + b[b.len() - 1]) / 2.0;
+            return (mid, (b[b.len() - 1] - b[0]).powi(2) / 12.0);
+        }
+        let mean = m1 / m0;
+        (mean, (m2 / m0 - mean * mean).max(0.0))
+    }
+
     /// `∫ |f - g|` of two one-dimensional functions.
     pub fn l1_distance(&self, other: &Plm) -> f64 {
         let bounds = merge_bounds(&self.bounds[0], &other.bounds[0]);
