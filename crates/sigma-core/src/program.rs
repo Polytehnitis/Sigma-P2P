@@ -49,6 +49,28 @@ impl TypeDef {
     pub fn continuous(name: &str, lo: f32, hi: f32, bins: usize) -> Self {
         Self { name: name.into(), kind: TypeKind::Continuous { lo, hi, bins } }
     }
+
+    /// The values an argument of this type ranges over: a symbolic type's values, or a
+    /// continuous type's regions, each named by its lower bound (`"0"`, `"2.5"`, …). A
+    /// continuous argument is grounded region by region, so `Heat(x)` over `[0, 10)` in four
+    /// regions has the atoms `Heat(0)`, `Heat(2.5)`, `Heat(5)` and `Heat(7.5)`, and a function
+    /// variable over it sees each region's midpoint.
+    pub fn argument_values(&self) -> Vec<String> {
+        match &self.kind {
+            TypeKind::Symbolic(values) => values.clone(),
+            &TypeKind::Continuous { lo, hi, bins } => {
+                let w = (hi - lo) / bins.max(1) as f32;
+                (0..bins).map(|i| format!("{}", lo + i as f32 * w)).collect()
+            }
+        }
+    }
+
+    /// The argument value of a continuous type that holds `x` (its region, clamped to the type).
+    pub fn argument_of(&self, x: f32) -> Option<String> {
+        let TypeKind::Continuous { lo, hi, bins } = self.kind else { return None };
+        let i = (((x - lo) / (hi - lo) * bins as f32).floor().max(0.0) as usize).min(bins - 1);
+        self.argument_values().get(i).cloned()
+    }
 }
 
 /// A function over a conditional's dimensions: `function_vars` (outermost), then each
@@ -440,6 +462,16 @@ impl Program {
     /// Checks the program and expands it into ground factors. This is the only
     /// interpretation the engine ever applies to a v2 skill.
     pub fn ground(&self) -> Result<Grounding, &'static str> {
+        // A continuous type used as an argument ranges over its regions, each named by its
+        // lower bound (see `TypeDef::argument_values`).
+        let regions: HashMap<&str, Vec<String>> = self
+            .types
+            .iter()
+            .filter_map(|t| match t.kind {
+                TypeKind::Continuous { .. } => Some((t.name.as_str(), t.argument_values())),
+                _ => None,
+            })
+            .collect();
         // Symbolic types, and continuous ones as (lo, hi, bins).
         let mut types: HashMap<&str, &[String]> = HashMap::new();
         let mut reals: HashMap<&str, (f32, f32, usize)> = HashMap::new();
@@ -467,6 +499,22 @@ impl Program {
                 return Err("duplicate type");
             }
         }
+        // The values an argument of type `t` ranges over: a symbolic type's, or a continuous
+        // type's regions.
+        let arg_values = |t: &str| -> Option<&[String]> {
+            types.get(t).copied().or_else(|| reals.get(t).and_then(|_| regions.get(t)).map(Vec::as_slice))
+        };
+        // Coordinates of an argument type's values along a function dimension: a symbol's
+        // index, or a region's midpoint. And the width of one value.
+        let arg_axis = |t: &str| -> (Vec<f32>, f32) {
+            match reals.get(t) {
+                Some(&(lo, hi, bins)) => {
+                    let w = (hi - lo) / bins as f32;
+                    ((0..bins).map(|i| lo + (i as f32 + 0.5) * w).collect(), w)
+                }
+                None => ((0..types.get(t).map_or(0, |v| v.len())).map(|i| i as f32).collect(), 1.0),
+            }
+        };
         let domain = |p: &PredicateDef| -> Result<usize, &'static str> {
             match &p.value_type {
                 None => Ok(2),
@@ -502,7 +550,7 @@ impl Program {
             let arg_types: Vec<&[String]> = p
                 .args
                 .iter()
-                .map(|t| types.get(t.as_str()).copied().ok_or("unknown argument type"))
+                .map(|t| arg_values(t.as_str()).ok_or("unknown argument type"))
                 .collect::<Result<_, _>>()?;
             let d = domain(p)?;
             if preds.insert(&p.name, (p, d)).is_some() {
@@ -535,13 +583,14 @@ impl Program {
             }
             // Variable -> type, from every argument position it appears in.
             let mut var_types: Vec<(&str, &[String])> = Vec::new();
+            let mut var_type_names: Vec<&str> = Vec::new();
             for pat in &c.patterns {
                 let (p, _) = preds.get(pat.predicate.as_str()).ok_or("unknown predicate in pattern")?;
                 if pat.args.len() != p.args.len() {
                     return Err("pattern arity mismatch");
                 }
                 for (term, ty) in pat.args.iter().zip(&p.args) {
-                    let values = types[ty.as_str()];
+                    let values = arg_values(ty.as_str()).expect("checked with the predicate");
                     match term {
                         Term::Const(k) if !values.contains(k) => return Err("constant outside its type"),
                         Term::Const(_) => {}
@@ -552,7 +601,10 @@ impl Program {
                         Term::Var(x) | Term::Affine { var: x, .. } => match var_types.iter().find(|(n, _)| n == x) {
                             Some((_, t)) if !std::ptr::eq(*t, values) => return Err("variable used with two types"),
                             Some(_) => {}
-                            None => var_types.push((x, values)),
+                            None => {
+                                var_types.push((x, values));
+                                var_type_names.push(ty.as_str());
+                            }
                         },
                     }
                 }
@@ -568,7 +620,7 @@ impl Program {
             let value_dims: Vec<usize> = c.patterns.iter().map(|p| preds[p.predicate.as_str()].1).collect();
             let slice_len = product(value_dims.iter().copied(), MAX_TABLE_LEN).ok_or("conditional table too large")?;
             let (mut axes, mut widths): (Vec<Vec<f32>>, Vec<f32>) =
-                fv.iter().map(|&i| ((0..var_types[i].1.len()).map(|x| x as f32).collect(), 1.0)).unzip();
+                fv.iter().map(|&i| arg_axis(var_type_names[i])).unzip();
             for p in &c.patterns {
                 let (def, d) = preds[p.predicate.as_str()];
                 let (a, w) = axis(def, d);
@@ -596,7 +648,7 @@ impl Program {
                             Term::Var(x) => args.push(var_types[index(x)].1[a[index(x)]].as_str()),
                             Term::Const(k) => args.push(k.as_str()),
                             Term::Affine { var, coef, offset, pad: fill } => {
-                                let values = types[ty.as_str()];
+                                let values = arg_values(ty.as_str()).expect("checked above");
                                 let j = *coef as i64 * a[index(var)] as i64 + *offset as i64;
                                 match usize::try_from(j).ok().filter(|&j| j < values.len()) {
                                     Some(j) => args.push(values[j].as_str()),
@@ -652,7 +704,7 @@ impl Program {
                         Arc::new(Analytic {
                             // Folded once here, so exact and particle inference see plain forms.
                             function: c.function.resolved().unwrap_or_else(|_| c.function.clone()),
-                            prefix: fv.iter().map(|&i| a[i] as f32).collect(),
+                            prefix: fv.iter().map(|&i| arg_axis(var_type_names[i]).0[a[i]]).collect(),
                         })
                     }),
                     layout,

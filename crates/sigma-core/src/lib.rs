@@ -1358,6 +1358,8 @@ mod tests_affine;
 #[cfg(test)]
 mod tests_continuous;
 #[cfg(test)]
+mod tests_continuous_args;
+#[cfg(test)]
 mod tests_decision;
 #[cfg(test)]
 mod tests_exact;
