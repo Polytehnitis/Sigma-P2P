@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 pub use actions::{ActionManifest, ActionSpec, ConfirmationGate, PendingAction, Undone};
 pub use crypto::NodeIdentity;
-pub use graph_memory::LearnedModels;
+pub use graph_memory::{ActionModel, LearnedModels};
 pub use language::{Intent, Interpretation, PhraseBook, Route};
 pub use memory::{Episode, EpisodicMemory, SemanticMemory, SemanticRecall};
 pub use mind::{Appraisal, Emotion, MindModel, OtherAgent};

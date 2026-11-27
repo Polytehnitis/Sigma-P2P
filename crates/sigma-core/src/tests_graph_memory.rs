@@ -183,3 +183,115 @@ fn skills_cannot_declare_internal_predicates() {
     let s = signed(&id, "x", vec![bin("@Episode", Context), bin("A", Action)], vec![1.0; 4]);
     assert_eq!(s.validate(), Err("reserved predicate name"));
 }
+
+/// Turns the lamp on `n` times, each time seeing Ready (`after`) follow.
+fn experience(engine: &mut SigmaEngine, n: usize, after: usize) {
+    for _ in 0..n {
+        engine.set_evidence("Ready", 1 - after).unwrap();
+        engine.push_goal("GoalLight");
+        assert_eq!(engine.cognitive_cycle().selected_action.as_deref(), Some("ActionA"));
+        engine.goal_stack.clear();
+        engine.set_evidence("Ready", after).unwrap();
+        engine.cognitive_cycle();
+    }
+}
+
+fn paired_stores() -> ((FactorStore, [u8; 32]), (FactorStore, [u8; 32])) {
+    let open = || {
+        let path = std::env::temp_dir().join(format!("sigma-model-sync-{}.redb", rand::random::<u64>()));
+        let store = FactorStore::open(path).unwrap();
+        let me = store.load_or_create_identity().unwrap().author_pubkey();
+        (store, me)
+    };
+    let (phone, pc) = (open(), open());
+    phone.0.pair_device(&pc.1).unwrap();
+    pc.0.pair_device(&phone.1).unwrap();
+    (phone, pc)
+}
+
+/// `from` sends its state to `to`, which merges it and refreshes its running engine.
+fn send(from: &(FactorStore, [u8; 32]), to: &(FactorStore, [u8; 32]), engine: &mut SigmaEngine) -> SyncReport {
+    let report = to.0.merge_sync_state(from.1, from.0.export_sync_state().unwrap()).unwrap();
+    to.0.refresh_engine(engine, &report).unwrap();
+    report
+}
+
+#[test]
+fn learned_models_follow_the_user_across_devices() {
+    let id = NodeIdentity::generate();
+    let (phone, pc) = paired_stores();
+    let (mut on_phone, mut on_pc) = (lamp_and_ready(&id), lamp_and_ready(&id));
+    on_pc.cognitive_cycle(); // the PC has model factors of its own, still uniform
+
+    // Learned on the phone, then synced: the PC's graph now predicts Ready after ActionA.
+    experience(&mut on_phone, 4, 1);
+    phone.0.save_memories(&on_phone).unwrap();
+    let report = send(&phone, &pc, &mut on_pc);
+    assert!(report.changed.contains(&sync::keys::model("ActionA")), "{:?}", report.changed);
+    let key = ("ActionA".to_string(), "Ready".to_string());
+    assert_eq!(on_pc.models.effects[&key], on_phone.models.effects[&key]);
+    let factor = on_pc
+        .memory_factors()
+        .iter()
+        .find(|f| on_pc.vars[*f.vars.last().unwrap()].schema.name == next_name("Ready", "ActionA"))
+        .expect("model factor rebuilt");
+    let t: Vec<f32> = factor.table.iter().copied().collect();
+    assert_eq!(&t, &on_phone.models.effects[&key]);
+    // It survives the PC's next cycle, and the PC's own store keeps it for its next boot.
+    on_pc.cognitive_cycle();
+    let t = &on_pc.models.effects[&key];
+    assert!(t[3] / (t[2] + t[3]) > 0.8, "{t:?}");
+    let mut booted = SigmaEngine::new();
+    pc.0.restore_engine(&mut booted).unwrap();
+    assert_eq!(booted.models.effects[&key], on_phone.models.effects[&key]);
+
+    // Echoing it back changes nothing on the phone.
+    pc.0.save_memories(&on_pc).unwrap();
+    let before = on_phone.models.clone();
+    send(&pc, &phone, &mut on_phone);
+    let t = &on_phone.models.effects[&key];
+    assert!(t[3] / (t[2] + t[3]) > 0.8);
+    assert_eq!(before.actions(), on_phone.models.actions());
+
+    // The newest learning wins: the PC now sees Ready *not* follow, and the phone adopts that.
+    experience(&mut on_pc, 6, 0);
+    pc.0.save_memories(&on_pc).unwrap();
+    send(&pc, &phone, &mut on_phone);
+    let t = &on_phone.models.effects[&key];
+    assert!(t[3] / (t[2] + t[3]) < 0.5, "{t:?}");
+    assert_eq!(on_phone.models.effects[&key], on_pc.models.effects[&key]);
+}
+
+#[test]
+fn malformed_synced_models_are_ignored() {
+    let id = NodeIdentity::generate();
+    let (phone, pc) = paired_stores();
+    let mut on_pc = lamp_and_ready(&id);
+    experience(&mut on_pc, 2, 1);
+    pc.0.save_memories(&on_pc).unwrap();
+    let before = on_pc.models.clone();
+
+    let bad = |model: ActionModel| {
+        let mut state = phone.0.export_sync_state().unwrap();
+        let clock = u64::MAX / 2;
+        let value = Some(postcard::to_allocvec(&model).unwrap());
+        state.registers.insert(
+            sync::keys::model("ActionA"),
+            sync::Register { stamp: sync::Stamp { clock, device: phone.1 }, value },
+        );
+        state
+    };
+    let nan = ActionModel { reward: Some(vec![f32::NAN; 4]), effects: Default::default() };
+    let huge = ActionModel { reward: None, effects: [("Ready".to_string(), vec![1.0; 3])].into() };
+    let internal = ActionModel { reward: None, effects: [(EPISODE.to_string(), vec![1.0; 4])].into() };
+    for model in [nan, huge, internal] {
+        assert!(!model.is_valid());
+        let report = pc.0.merge_sync_state(phone.1, bad(model)).unwrap();
+        pc.0.refresh_engine(&mut on_pc, &report).unwrap();
+        assert_eq!(on_pc.models, before);
+        let mut booted = SigmaEngine::new();
+        pc.0.restore_engine(&mut booted).unwrap();
+        assert_eq!(booted.models, before);
+    }
+    assert!(!on_pc.adopt_action_model("@Episode", ActionModel::default()));
+}
