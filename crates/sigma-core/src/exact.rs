@@ -74,7 +74,7 @@ impl SigmaEngine {
 
     /// Runs exact message passing to quiescence.
     pub(crate) fn exact_state(&self, clamp: &dyn Fn(usize) -> Option<usize>) -> Option<ExactState> {
-        if !self.uses_exact() {
+        if !self.uses_exact() || self.inference.grid_only() {
             return None;
         }
         let functions: Vec<Plm> = (0..self.factors.len()).map(|fi| self.factor_plm(fi)).collect::<Option<_>>()?;
@@ -190,7 +190,8 @@ impl SigmaEngine {
             f.vars.iter().map(|&v| self.vars[v].range.map(|(lo, hi)| (lo as f64, hi as f64))).collect();
         let exact = match &a.function {
             // Mapped forms are resolved at grounding; a table has no exact form.
-            Function::Table(_) | Function::Mapped { .. } => return Some(live.simplified()),
+            // A neural function has no exact piecewise-linear form: its region table is used.
+            Function::Table(_) | Function::Mapped { .. } | Function::Neural(_) => return Some(live.simplified()),
             Function::PiecewiseLinear { default, pieces } => {
                 let k = a.prefix.len();
                 let bounds: Vec<Vec<f64>> = (0..f.vars.len())
