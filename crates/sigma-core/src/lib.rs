@@ -23,6 +23,7 @@ pub mod memory;
 pub mod mind;
 pub mod neural;
 pub mod parametric;
+pub mod parse;
 pub mod particles;
 pub mod plm;
 pub mod program;
@@ -45,8 +46,8 @@ pub use memory::{Episode, EpisodicMemory, SemanticMemory, SemanticRecall};
 pub use mind::{Appraisal, Emotion, MindModel, OtherAgent};
 pub use plm::Plm;
 pub use program::{
-    Conditional, Extensions, Function, Pattern, PatternKind, Piece, PredicateDef, PredicateOptions, Program, Skill,
-    SkillBody, Term, TypeDef, TypeKind, ValueMap,
+    Conditional, Extensions, Flags, Function, Pattern, PatternKind, Piece, PredicateDef, PredicateOptions, Program,
+    Skill, SkillBody, Term, TypeDef, TypeKind, ValueMap,
 };
 pub use storage::FactorStore;
 pub use substate::Substate;
@@ -282,6 +283,9 @@ pub struct CycleOutcome {
     /// The operator distribution of this cycle's decision: each candidate action, after
     /// preferences, with its selection probability under the selection policy.
     pub operators: Vec<(String, f32)>,
+    /// Working memory that action patterns replaced at the end of the cycle (predicates with
+    /// Sigma's `replace` option), as `(atom, value)`.
+    pub replaced: Vec<(String, usize)>,
 }
 
 /// A particle message over a continuous predicate: weighted samples of its value.
@@ -387,6 +391,10 @@ pub struct SigmaEngine {
     pub inference: Inference,
     /// Soft evidence on the appraisal predicates from the last cycle's appraisal.
     appraisal_priors: HashMap<usize, Vec<f32>>,
+    /// Predicates (by name) whose working memory action patterns replace each cycle.
+    replace: HashSet<String>,
+    /// Vector predicates (by name): beliefs normalized to unit length.
+    vector: HashSet<String>,
     /// Transitions lived, for structure learning (see [`generalize`]).
     experience: VecDeque<generalize::Experience>,
     /// Transitions since the last structure-learning pass.
@@ -459,6 +467,8 @@ impl SigmaEngine {
         for (name, o) in &grounding.options {
             self.options.insert(name.clone(), *o);
         }
+        self.replace.extend(grounding.flags.replace.iter().cloned());
+        self.vector.extend(grounding.flags.vector.iter().cloned());
         for p in &grounding.atoms {
             self.register_predicate(p)?;
         }
@@ -558,6 +568,88 @@ impl SigmaEngine {
         }
         self.options.insert(name.to_string(), options);
         Ok(())
+    }
+
+    /// Sigma's `replace` option for predicate `name`: what action patterns write into its
+    /// working memory replaces it at the end of each decision cycle.
+    pub fn set_replace(&mut self, name: &str, on: bool) -> Result<(), &'static str> {
+        self.flag(name, on, true)
+    }
+
+    /// Sigma's `vector` option for predicate `name`: its beliefs are vectors normalized to
+    /// unit length (compare them with [`SigmaEngine::vector_similarity`]).
+    pub fn set_vector(&mut self, name: &str, on: bool) -> Result<(), &'static str> {
+        self.flag(name, on, false)
+    }
+
+    fn flag(&mut self, name: &str, on: bool, replace: bool) -> Result<(), &'static str> {
+        if self.vars.iter().any(|n| atom_base(&n.schema.name) == name && n.range.is_some()) {
+            return Err("replace and vector apply to discrete predicates");
+        }
+        let set = if replace { &mut self.replace } else { &mut self.vector };
+        if on {
+            set.insert(name.to_string());
+        } else {
+            set.remove(name);
+        }
+        Ok(())
+    }
+
+    fn is_vector(&self, v: usize) -> bool {
+        !self.vector.is_empty() && self.vector.contains(atom_base(&self.vars[v].schema.name))
+    }
+
+    /// Cosine similarity of the beliefs of two vector (or any discrete) predicates of the same
+    /// dimension, given working memory.
+    pub fn vector_similarity(&self, a: &str, b: &str) -> Option<f32> {
+        let (x, y) = (self.posterior(a)?, self.posterior(b)?);
+        if x.len() != y.len() {
+            return None;
+        }
+        let dot: f32 = x.iter().zip(&y).map(|(p, q)| p * q).sum();
+        let n = (x.iter().map(|p| p * p).sum::<f32>() * y.iter().map(|q| q * q).sum::<f32>()).sqrt();
+        (n > 0.0).then_some(dot / n)
+    }
+
+    /// Sigma's `replace`: every replace predicate that an action pattern writes into takes the
+    /// value its belief now favours (computed without its old value), replacing what working
+    /// memory held. Returns what was replaced.
+    fn replace_working_memory(&mut self) -> Vec<(String, usize)> {
+        if self.replace.is_empty() {
+            return Vec::new();
+        }
+        let written: Vec<usize> = (0..self.vars.len())
+            .filter(|&v| self.replace.contains(atom_base(&self.vars[v].schema.name)) && self.vars[v].range.is_none())
+            .filter(|&v| {
+                self.factors.iter().any(|f| {
+                    !f.memory && f.vars.iter().zip(&f.kinds).any(|(&u, k)| u == v && *k == PatternKind::Action)
+                })
+            })
+            .collect();
+        if written.is_empty() {
+            return Vec::new();
+        }
+        let mut fresh = self.hypothetical();
+        for &v in &written {
+            fresh.vars[v].evidence = None;
+            fresh.multi.remove(&v);
+        }
+        let stacked: HashSet<usize> = self.goal_stack.iter().filter_map(|g| self.index.get(g).copied()).collect();
+        let beliefs = fresh.infer(|v| stacked.contains(&v).then_some(1));
+        let mut out = Vec::new();
+        for v in written {
+            let b = &beliefs[v];
+            let d = b.len() as f32;
+            let (x, &best) = b.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).expect("a domain");
+            // Only an informative message replaces working memory.
+            if best >= 1.0 / d + 0.05 && self.vars[v].evidence != Some(x) {
+                self.vars[v].evidence = Some(x);
+                self.exact.remove(&v);
+                self.multi.remove(&v);
+                out.push((self.vars[v].schema.name.clone(), x));
+            }
+        }
+        out
     }
 
     /// The options of the predicate behind atom `name` (the defaults when none were set).
@@ -791,7 +883,8 @@ impl SigmaEngine {
             self.particle_percepts.clear();
             self.forget_transient();
             self.appraisal = self.appraise(appraisal, false);
-            return CycleOutcome { appraisal: self.appraisal.clone(), ..CycleOutcome::default() };
+            let replaced = self.replace_working_memory();
+            return CycleOutcome { appraisal: self.appraisal.clone(), replaced, ..CycleOutcome::default() };
         };
         // Appraisals of the situation enter the graph before elaboration, so skills can
         // condition on them this cycle (control and being stuck come from the last decision).
@@ -892,7 +985,9 @@ impl SigmaEngine {
             awaiting_confirmation: None,
             chunk,
             operators: operators.into_iter().map(|(v, p)| (self.vars[v].schema.name.clone(), p)).collect(),
+            replaced: Vec::new(),
         };
+        outcome.replaced = self.replace_working_memory();
         self.trace = Some(Trace { factors: active, marginals });
         self.prediction = p2;
         self.attended = None;
@@ -1153,7 +1248,7 @@ impl SigmaEngine {
     /// slot never sends any into it.
     fn infer(&self, clamp: impl Fn(usize) -> Option<usize>) -> Vec<Vec<f32>> {
         let mut beliefs = self.infer_raw(clamp);
-        if !self.options.is_empty() {
+        if !self.options.is_empty() || !self.vector.is_empty() {
             for (v, b) in beliefs.iter_mut().enumerate() {
                 *b = self.shape_belief(v, std::mem::take(b));
             }
@@ -1185,6 +1280,13 @@ impl SigmaEngine {
         let o = self.options_of(v);
         if o.exponential {
             b.iter_mut().for_each(|x| *x = x.exp());
+        }
+        if self.is_vector(v) {
+            let n = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if n > 0.0 && n.is_finite() {
+                b.iter_mut().for_each(|x| *x /= n);
+            }
+            return b;
         }
         if o.normalize && o.unique {
             return normalize(b);
@@ -1488,6 +1590,8 @@ mod tests_models;
 mod tests_neural;
 #[cfg(test)]
 mod tests_options;
+#[cfg(test)]
+mod tests_parse;
 #[cfg(test)]
 mod tests_particles;
 #[cfg(test)]

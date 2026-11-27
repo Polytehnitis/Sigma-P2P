@@ -16,7 +16,7 @@
 //! is deleted.
 
 use crate::graph_memory::{next_name, transition_name, Q_WEIGHT, REWARD_WEIGHT};
-use crate::program::{Conditional, Function, Pattern, PredicateDef, Program, Skill, SkillBody, Term, TypeDef};
+use crate::program::{Conditional, Function, Pattern, PredicateDef, Program, Skill, Term, TypeDef};
 use crate::{
     ImpasseKind, NodeIdentity, PatternKind, PredicateRole, PredicateSchema, SigmaEngine, SkillPackage, MAX_TABLE_LEN,
     SUBGOAL_PROMOTION, TIE_MARGIN,
@@ -51,7 +51,7 @@ pub fn offered_to_peers(skill: &Skill) -> bool {
 /// Whether `skill` is a chunk general enough to offer to peers: a variablized rule whose
 /// patterns name no constant, so it says nothing about the user's own things.
 pub fn shareable_chunk(skill: &Skill) -> bool {
-    let (SkillBody::Program(p) | SkillBody::Extended(p, _)) = &skill.body else { return false };
+    let Some(p) = skill.program_body() else { return false };
     skill.skill_name.starts_with(CHUNK_PREFIX)
         && p.conditionals.iter().flat_map(|c| &c.patterns).any(|pat| !pat.args.is_empty())
         && p.conditionals.iter().flat_map(|c| &c.patterns).all(|pat| pat.args.iter().all(|t| matches!(t, Term::Var(_))))
@@ -327,6 +327,8 @@ impl SigmaEngine {
             attended: self.attended.clone(),
             inference: self.inference,
             options: self.options.clone(),
+            replace: self.replace.clone(),
+            vector: self.vector.clone(),
             multi: self.multi.clone(),
             appraisal_priors: self.appraisal_priors.clone(),
             ..SigmaEngine::default()
@@ -550,7 +552,7 @@ impl SigmaEngine {
     fn declaration(&self, atom: &str) -> Option<(PredicateDef, Vec<TypeDef>)> {
         let base = crate::atom_base(atom);
         self.skills.iter().find_map(|s| {
-            let (SkillBody::Program(p) | SkillBody::Extended(p, _)) = &s.body else { return None };
+            let p = s.program_body()?;
             let def = p.predicates.iter().find(|d| d.name == base)?;
             let types: Option<Vec<TypeDef>> = def
                 .args
