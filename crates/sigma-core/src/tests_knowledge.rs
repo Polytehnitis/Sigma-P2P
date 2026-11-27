@@ -183,7 +183,7 @@ fn knowledge_leaves_the_agent_alone() {
     let skill = starting_knowledge()[0].skill(&id);
     assert_eq!(skill, starting_knowledge()[0].skill(&id));
     engine.install_starting_knowledge(&id).unwrap();
-    assert_eq!(engine.knowledge_bases().len(), 6);
+    assert_eq!(engine.knowledge_bases().len(), 8);
 }
 
 #[test]

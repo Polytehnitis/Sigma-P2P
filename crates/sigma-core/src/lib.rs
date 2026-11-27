@@ -44,6 +44,7 @@ pub mod parse;
 pub mod particles;
 pub mod plm;
 pub mod program;
+pub mod rosie;
 pub mod storage;
 pub mod substate;
 pub mod sync;
@@ -1783,6 +1784,8 @@ mod tests_options;
 mod tests_parse;
 #[cfg(test)]
 mod tests_particles;
+#[cfg(test)]
+mod tests_rosie;
 #[cfg(test)]
 mod tests_smaller;
 #[cfg(test)]
