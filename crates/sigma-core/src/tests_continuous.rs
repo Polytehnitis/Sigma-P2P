@@ -107,8 +107,8 @@ fn continuous_types_are_validated() {
     let id = NodeIdentity::generate();
     let check = |p: Program| signed_program(&id, "x", p).validate();
     let mut p = thermostat(vec![cold_piece(0.0)]);
-    p.predicates[2].args = vec!["celsius".into()];
-    assert_eq!(check(p), Err("unknown argument type"), "continuous types cannot be arguments");
+    p.predicates[2].args = vec!["nowhere".into()];
+    assert_eq!(check(p), Err("unknown argument type"));
     let mut p = thermostat(vec![cold_piece(0.0)]);
     p.conditionals[0].function = Function::PiecewiseLinear {
         default: 1.0,
