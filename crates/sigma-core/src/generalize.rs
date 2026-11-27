@@ -157,6 +157,7 @@ impl SigmaEngine {
                 let s = &self.vars[v].schema;
                 s.role != PredicateRole::Action
                     && !internal(&s.name)
+                    && !self.is_knowledge(&s.name)
                     && self.vars[v].range.is_none()
                     && s.domain_size <= MAX_STRUCTURE_DOMAIN
             })

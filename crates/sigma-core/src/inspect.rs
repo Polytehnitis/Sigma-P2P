@@ -216,7 +216,7 @@ impl SigmaEngine {
         let prior = self.grid_prior(&clamp);
         let tables: Vec<&ndarray::ArrayD<f32>> = self.factors.iter().map(|f| &f.table).collect();
         let msgs = self.message_passing_traced(&prior, &tables, Some(&mut recorder));
-        let beliefs: Vec<Vec<f32>> = (0..self.vars.len()).map(|v| self.belief(v, &prior, &msgs, None)).collect();
+        let beliefs: Vec<Vec<f32>> = self.beliefs(&prior, &msgs);
         self.finish(TracePath::Grid, recorder, named(&beliefs))
     }
 
