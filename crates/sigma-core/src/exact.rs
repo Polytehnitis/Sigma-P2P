@@ -20,6 +20,9 @@ use crate::{PatternKind, SigmaEngine, BP_ITERS};
 
 /// Message changes (L1) below this end message passing.
 const TOLERANCE: f64 = 1e-5;
+/// Weight of one piecewise-linear region against a table entry, when deciding whether a
+/// sweep is worth running on several threads.
+const EXACT_WORK: usize = 64;
 /// Most quadrature points per message before VMP falls back to one node per slice.
 const MAX_VMP_NODES: usize = 4_000;
 /// Knots per slice of a continuous variable in a VMP message.
@@ -130,56 +133,54 @@ impl SigmaEngine {
         let maximize = self.inference == crate::Inference::MaxProduct;
         let variational = self.inference == crate::Inference::VariationalMessagePassing;
         let ep = self.inference == crate::Inference::ExpectationPropagation;
+        // Exact messages are costly: a graph of a few dozen factors is worth spreading.
+        let threads = self.worker_threads(functions.iter().map(|p| p.regions() * EXACT_WORK).sum());
         for _ in 0..BP_ITERS {
-            let next: Vec<Vec<Plm>> = self
-                .factors
-                .iter()
-                .enumerate()
-                .map(|(fi, f)| {
-                    if self.attended.as_ref().is_some_and(|mask| !mask[fi]) {
-                        return f.vars.iter().map(|&v| uniform(v)).collect();
-                    }
-                    let inbound: Vec<Belief> = f
-                        .vars
-                        .iter()
-                        .enumerate()
-                        .map(|(s, &v)| match f.kinds[s] {
-                            PatternKind::Action => Belief::Density(uniform(v)),
-                            // Mean field: the other variables' whole beliefs, not cavities.
-                            _ if variational => state.belief(self, v, None),
-                            _ => state.belief(self, v, Some((fi, s))),
-                        })
-                        .collect();
-                    (0..f.vars.len())
-                        .map(|s| {
-                            if f.kinds[s] == PatternKind::Condition {
-                                return uniform(f.vars[s]);
-                            }
-                            if variational {
-                                return self.vmp_message(f.vars[s], s, &functions[fi], &inbound);
-                            }
-                            let mut g = functions[fi].clone();
-                            for j in (0..f.vars.len()).rev().filter(|&j| j != s) {
-                                g = match &inbound[j] {
-                                    Belief::Point(x) => g.substitute(j, *x),
-                                    // Max-product, or a multi-valued predicate: maximized over.
-                                    Belief::Density(m) if maximize || !self.options_of(f.vars[j]).unique => {
-                                        g.mul_max_out(j, m)
-                                    }
-                                    Belief::Density(m) => g.mul_sum_out(j, m),
-                                };
-                            }
-                            let msg = nonnegative(g).simplified().normalized();
-                            match &inbound[s] {
-                                Belief::Density(cavity) if ep && self.vars[f.vars[s]].range.is_some() => {
-                                    self.ep_project_plm(f.vars[s], cavity, msg)
+            let next: Vec<Vec<Plm>> = crate::par_map(self.factors.len(), threads, |fi| {
+                let f = &self.factors[fi];
+                if self.attended.as_ref().is_some_and(|mask| !mask[fi]) {
+                    return f.vars.iter().map(|&v| uniform(v)).collect();
+                }
+                let inbound: Vec<Belief> = f
+                    .vars
+                    .iter()
+                    .enumerate()
+                    .map(|(s, &v)| match f.kinds[s] {
+                        PatternKind::Action => Belief::Density(uniform(v)),
+                        // Mean field: the other variables' whole beliefs, not cavities.
+                        _ if variational => state.belief(self, v, None),
+                        _ => state.belief(self, v, Some((fi, s))),
+                    })
+                    .collect();
+                (0..f.vars.len())
+                    .map(|s| {
+                        if f.kinds[s] == PatternKind::Condition {
+                            return uniform(f.vars[s]);
+                        }
+                        if variational {
+                            return self.vmp_message(f.vars[s], s, &functions[fi], &inbound);
+                        }
+                        let mut g = functions[fi].clone();
+                        for j in (0..f.vars.len()).rev().filter(|&j| j != s) {
+                            g = match &inbound[j] {
+                                Belief::Point(x) => g.substitute(j, *x),
+                                // Max-product, or a multi-valued predicate: maximized over.
+                                Belief::Density(m) if maximize || !self.options_of(f.vars[j]).unique => {
+                                    g.mul_max_out(j, m)
                                 }
-                                _ => msg,
+                                Belief::Density(m) => g.mul_sum_out(j, m),
+                            };
+                        }
+                        let msg = nonnegative(g).simplified().normalized();
+                        match &inbound[s] {
+                            Belief::Density(cavity) if ep && self.vars[f.vars[s]].range.is_some() => {
+                                self.ep_project_plm(f.vars[s], cavity, msg)
                             }
-                        })
-                        .collect()
-                })
-                .collect();
+                            _ => msg,
+                        }
+                    })
+                    .collect()
+            });
             let delta = next
                 .iter()
                 .flatten()
