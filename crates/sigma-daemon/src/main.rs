@@ -42,6 +42,43 @@ struct Args {
     /// Remove all stored action rules.
     #[arg(long)]
     clear_action_rules: bool,
+    /// Write the restored factor graph to FILE and exit: Graphviz for `.dot`, JSON for
+    /// `.json`, a self-contained interactive viewer for `.html`.
+    #[arg(long, value_name = "FILE")]
+    dump_graph: Option<PathBuf>,
+    /// Trace message passing on the restored graph (each sweep's largest change and the
+    /// messages that changed) and exit.
+    #[arg(long)]
+    trace_messages: bool,
+    /// With --dump-graph, keep internal variables (memories, models) in the picture.
+    #[arg(long)]
+    show_internal: bool,
+}
+
+/// Renders a graph snapshot in the format the file extension names.
+fn render_graph(snapshot: &sigma_core::inspect::GraphSnapshot, path: &std::path::Path) -> Result<String> {
+    match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("dot" | "gv") => Ok(snapshot.to_dot()),
+        Some("json") => Ok(snapshot.to_json()),
+        Some("html" | "htm") => Ok(snapshot.to_html()),
+        _ => Err(anyhow!("--dump-graph {}: use a .dot, .json or .html file", path.display())),
+    }
+}
+
+/// Prints a message trace: one line per sweep, then the final beliefs.
+fn print_trace(trace: &sigma_core::inspect::MessageTrace) {
+    for (i, sweep) in trace.sweeps.iter().enumerate() {
+        println!("sweep {:>3}: delta {:.2e}, {} message(s) changed", i + 1, sweep.delta, sweep.changed.len());
+        for m in &sweep.changed {
+            let values: Vec<String> = m.message.iter().map(|x| format!("{x:.3}")).collect();
+            println!("    {} -> {}: [{}]", m.skill, m.variable, values.join(", "));
+        }
+    }
+    println!("{} after {} sweep(s)", if trace.converged { "converged" } else { "stopped" }, trace.sweeps.len());
+    for (name, belief) in &trace.beliefs {
+        let values: Vec<String> = belief.iter().map(|x| format!("{x:.3}")).collect();
+        println!("  {name}: [{}]", values.join(", "));
+    }
 }
 
 /// Builds the action specs given on the command line.
@@ -89,6 +126,23 @@ async fn main() -> Result<()> {
 
     let mut engine = SigmaEngine::new();
     let restored = store.restore_engine(&mut engine).map_err(|e| anyhow!(e))?;
+    if args.dump_graph.is_some() || args.trace_messages {
+        if let Some(path) = &args.dump_graph {
+            let snapshot = engine.graph_snapshot();
+            let snapshot = if args.show_internal { snapshot } else { snapshot.visible() };
+            std::fs::write(path, render_graph(&snapshot, path)?)?;
+            println!(
+                "Wrote {} variable(s) and {} factor(s) to {}",
+                snapshot.variables.len(),
+                snapshot.factors.len(),
+                path.display()
+            );
+        }
+        if args.trace_messages {
+            print_trace(&engine.trace_messages());
+        }
+        return Ok(());
+    }
     let mut node = SkillMeshNode::spawn(&args.swarm, args.bootstrap_peers, store.clone()).await?;
     // Ground chunks describe the user's own situations: they stay on the user's devices.
     for skill in restored.iter().filter(|s| sigma_core::substate::offered_to_peers(s)).cloned() {

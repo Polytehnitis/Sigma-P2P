@@ -18,6 +18,7 @@ mod exact;
 pub mod field;
 pub mod generalize;
 pub mod graph_memory;
+pub mod inspect;
 pub mod language;
 pub mod map;
 pub mod memory;
@@ -1369,6 +1370,17 @@ impl SigmaEngine {
 
     /// Loopy sum-product over `tables` (one per factor, indexed like `prior`'s domains).
     fn message_passing(&self, prior: &[Vec<f32>], tables: &[&ArrayD<f32>]) -> Vec<Vec<Vec<f32>>> {
+        self.message_passing_traced(prior, tables, None)
+    }
+
+    /// [`Self::message_passing`], recording each sweep's largest change and the messages that
+    /// changed in it into `trace` (see [`inspect`]).
+    pub(crate) fn message_passing_traced(
+        &self,
+        prior: &[Vec<f32>],
+        tables: &[&ArrayD<f32>],
+        mut trace: Option<&mut inspect::Recorder>,
+    ) -> Vec<Vec<Vec<f32>>> {
         let fixed = prior;
         let uniform = |v: usize| normalize(vec![1.0; prior[v].len()]);
         let mut msgs: Vec<Vec<Vec<f32>>> =
@@ -1472,6 +1484,9 @@ impl SigmaEngine {
                 .flatten()
                 .zip(msgs.iter().flatten().flatten())
                 .fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+            if let Some(t) = trace.as_deref_mut() {
+                t.record(&msgs, &next, delta);
+            }
             msgs = next;
             if delta < BP_TOLERANCE {
                 break;
@@ -1630,5 +1645,7 @@ mod tests_smaller;
 mod tests_substates;
 #[cfg(test)]
 mod tests_sync;
+#[cfg(test)]
+mod tests_tooling;
 #[cfg(test)]
 mod tests_v2;
