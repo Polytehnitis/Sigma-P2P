@@ -496,7 +496,7 @@ impl Program {
             if !plain(&p.name) {
                 return Err("invalid predicate name");
             }
-            if crate::graph_memory::internal(&p.name) {
+            if crate::graph_memory::internal(&p.name) && crate::appraisal::appraisal_schema(&p.name).is_none() {
                 return Err("reserved predicate name");
             }
             let arg_types: Vec<&[String]> = p
@@ -505,6 +505,12 @@ impl Program {
                 .map(|t| types.get(t.as_str()).copied().ok_or("unknown argument type"))
                 .collect::<Result<_, _>>()?;
             let d = domain(p)?;
+            if let Some(a) = crate::appraisal::appraisal_schema(&p.name) {
+                // An appraisal predicate: as the engine defines it.
+                if !p.args.is_empty() || p.role != a.role || d != a.domain_size {
+                    return Err("reserved predicate name");
+                }
+            }
             if preds.insert(&p.name, (p, d)).is_some() {
                 return Err("duplicate predicate");
             }

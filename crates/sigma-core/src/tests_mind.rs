@@ -149,3 +149,62 @@ fn recursive_theory_of_mind() {
     assert!(level1.nested.is_empty());
     assert_eq!(level1.predicted_action, None, "without modelling Carol, Bob is stuck in a tie");
 }
+
+#[test]
+fn appraisals_live_in_the_graph_and_skills_can_use_them() {
+    use crate::appraisal::{EMOTION, EMOTIONS, SURPRISED};
+    let id = NodeIdentity::generate();
+    let bin = |n: &str, r: PredicateRole| PredicateSchema::binary(n, r);
+    let mut engine = SigmaEngine::new();
+    // The door is usually shut. While the goal is on, carrying on is the habit, but a
+    // surprised agent investigates first.
+    let skills = [
+        crate::tests::signed(&id, "door", vec![bin("Door", PredicateRole::Context)], vec![9.0, 1.0]),
+        crate::tests::signed(
+            &id,
+            "carry",
+            vec![bin("G", PredicateRole::Goal), bin("Carry", PredicateRole::Action)],
+            vec![1.0, 1.0, 1.0, 4.0],
+        ),
+        crate::tests::signed(
+            &id,
+            "investigate",
+            vec![
+                bin("G", PredicateRole::Goal),
+                bin(SURPRISED, PredicateRole::Context),
+                bin("Investigate", PredicateRole::Action),
+            ],
+            vec![1.0, 1.0, 1.0, 1.0, 1.0, 0.1, 1.0, 40.0],
+        ),
+    ];
+    for s in skills {
+        assert_eq!(s.validate(), Ok(()), "skills may use appraisal predicates");
+        engine.compile_skill(s).unwrap();
+    }
+    engine.push_goal("G");
+    assert_eq!(engine.cognitive_cycle().selected_action.as_deref(), Some("Carry"));
+    // The door is found open: surprising, and the surprise is in the graph this cycle.
+    engine.set_evidence("Door", 1).unwrap();
+    let out = engine.cognitive_cycle();
+    assert!(out.appraisal.surprise > 0.8);
+    assert_eq!(out.appraisal.emotion, Emotion::Surprise);
+    assert_eq!(out.selected_action.as_deref(), Some("Investigate"));
+    assert!(engine.posterior(SURPRISED).unwrap()[1] > 0.8);
+    // The emotion is a variable of the graph too.
+    let e = engine.posterior(EMOTION).unwrap();
+    let best = e.iter().copied().fold(0.0, f32::max);
+    assert_eq!(EMOTIONS[e.iter().position(|&x| x == best).unwrap()], Emotion::Surprise);
+    // Nothing new next time: no surprise, back to the habit.
+    let out = engine.cognitive_cycle();
+    assert_eq!(out.appraisal.surprise, 0.0);
+    assert_eq!(out.selected_action.as_deref(), Some("Carry"));
+    // Internal names other than the appraisal predicates stay reserved, and an appraisal
+    // predicate must be declared as the engine defines it.
+    let bad = crate::tests::signed(
+        &id,
+        "x",
+        vec![bin(EMOTION, PredicateRole::Context), bin("A", PredicateRole::Action)],
+        vec![1.0; 4],
+    );
+    assert_eq!(bad.validate(), Err("reserved predicate name"));
+}

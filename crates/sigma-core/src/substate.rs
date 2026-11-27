@@ -304,6 +304,7 @@ impl SigmaEngine {
             inference: self.inference,
             options: self.options.clone(),
             multi: self.multi.clone(),
+            appraisal_priors: self.appraisal_priors.clone(),
             ..SigmaEngine::default()
         }
     }

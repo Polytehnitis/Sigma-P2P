@@ -10,6 +10,7 @@
 //! (closed world) when choosing an action.
 
 pub mod actions;
+pub mod appraisal;
 pub mod crypto;
 pub mod decision;
 pub mod demos;
@@ -132,7 +133,11 @@ impl SkillPackage {
         if names.len() != self.predicates.len() {
             return Err("duplicate predicate");
         }
-        if self.predicates.iter().any(|p| graph_memory::internal(&p.name)) {
+        if self
+            .predicates
+            .iter()
+            .any(|p| graph_memory::internal(&p.name) && appraisal::appraisal_schema(&p.name).as_ref() != Some(p))
+        {
             return Err("reserved predicate name");
         }
         if !self.factor_values.iter().all(|v| v.is_finite() && (0.0..=MAX_FACTOR_VALUE).contains(v)) {
@@ -357,6 +362,8 @@ pub struct SigmaEngine {
     multi: HashMap<usize, Vec<usize>>,
     /// Sum-product (marginals) or max-product (MAP) message passing.
     pub inference: Inference,
+    /// Soft evidence on the appraisal predicates from the last cycle's appraisal.
+    appraisal_priors: HashMap<usize, Vec<f32>>,
 }
 
 impl SigmaEngine {
@@ -749,9 +756,13 @@ impl SigmaEngine {
             self.percepts.clear();
             self.particle_percepts.clear();
             self.forget_transient();
-            self.appraisal = appraisal.label(false);
+            self.appraisal = self.appraise(appraisal, false);
             return CycleOutcome { appraisal: self.appraisal.clone(), ..CycleOutcome::default() };
         };
+        // Appraisals of the situation enter the graph before elaboration, so skills can
+        // condition on them this cycle (control and being stuck come from the last decision).
+        appraisal.familiarity = self.familiarity();
+        self.set_appraisal_priors(&appraisal, None);
         self.attended = self.attend(&surprise);
         let elaboration = self.elaborate(root);
         let wm: Vec<Option<usize>> = self.vars.iter().map(|n| n.evidence).collect();
@@ -807,9 +818,8 @@ impl SigmaEngine {
             }
         }
         appraisal.control = selected.map_or(0.0, |v| p2[v][1]);
-        appraisal.familiarity = self.familiarity();
         let stuck = decision_impasse.as_ref().is_some_and(|d| !d.resolved && d.kind != ImpasseKind::NoChange);
-        self.appraisal = appraisal.label(stuck);
+        self.appraisal = self.appraise(appraisal, stuck);
         let attended_skills = match &self.attended {
             Some(mask) => {
                 let mut names: Vec<String> = (0..self.factors.len())
@@ -1172,7 +1182,7 @@ impl SigmaEngine {
         if let Some(set) = self.multi.get(&v) {
             return (0..d).map(|x| if set.contains(&x) { 1.0 } else { 0.0 }).collect();
         }
-        if let Some(p) = self.percepts.get(&v) {
+        if let Some(p) = self.percepts.get(&v).or_else(|| self.appraisal_priors.get(&v)) {
             return p.clone();
         }
         if self.vars[v].range.is_none() && self.options_of(v).closed_world {

@@ -16,6 +16,7 @@ pub struct Appraisal {
     pub control: f32,
     /// How much of the current situation matches the closest remembered episode.
     pub familiarity: f32,
+    /// The MAP value of `@Emotion` in the graph (see [`crate::appraisal`]).
     pub emotion: Emotion,
 }
 
@@ -36,18 +37,6 @@ pub enum Emotion {
 }
 
 impl Appraisal {
-    pub(crate) fn label(mut self, stuck: bool) -> Self {
-        self.emotion = match () {
-            _ if self.desirability > 0.3 => Emotion::Joy,
-            _ if self.desirability < -0.3 => Emotion::Distress,
-            _ if self.surprise > 0.5 => Emotion::Surprise,
-            _ if stuck => Emotion::Fear,
-            _ if self.control > 0.7 => Emotion::Hope,
-            _ => Emotion::Neutral,
-        };
-        self
-    }
-
     /// Affect modulates learning: surprising outcomes are learned faster.
     pub fn learning_rate(&self, base: f32) -> f32 {
         base * (1.0 + self.surprise)

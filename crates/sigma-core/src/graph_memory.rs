@@ -33,6 +33,7 @@
 //! Internal predicates start with `@`. Skills may not declare such names, and they are left
 //! out of cycle outcomes and of other agents' perspectives.
 
+use crate::appraisal::APPRAISAL_SKILL;
 use crate::memory::{Episode, NOISE, RECENCY};
 use crate::{
     normalize, FactorNode, PatternKind, PredicateRole, PredicateSchema, Program, SigmaEngine, Skill, MAX_FACTOR_VALUE,
@@ -253,14 +254,14 @@ impl LearnedModels {
 }
 
 /// Factors of one internal skill being built.
-struct Builder {
+pub(crate) struct Builder {
     skill: Arc<Skill>,
     weights: Vec<f32>,
-    factors: Vec<FactorNode>,
+    pub(crate) factors: Vec<FactorNode>,
 }
 
 impl Builder {
-    fn new(name: &str) -> Self {
+    pub(crate) fn new(name: &str) -> Self {
         Builder {
             skill: Arc::new(Skill::program(name, 0, Program::default())),
             weights: Vec::new(),
@@ -268,7 +269,7 @@ impl Builder {
         }
     }
 
-    fn add(
+    pub(crate) fn add(
         &mut self,
         vars: Vec<usize>,
         kinds: Vec<PatternKind>,
@@ -303,15 +304,17 @@ impl SigmaEngine {
     pub fn rebuild_memory_factors(&mut self) {
         self.save_models();
         self.factors.retain(|f| !f.memory);
-        for name in [EPISODIC_SKILL, SEMANTIC_SKILL, MODEL_SKILL, PERCEPTION_SKILL, UTILITY_SKILL] {
+        for name in [EPISODIC_SKILL, SEMANTIC_SKILL, MODEL_SKILL, PERCEPTION_SKILL, UTILITY_SKILL, APPRAISAL_SKILL] {
             self.initial.remove(name);
         }
+        let appraisal = Some(self.appraisal_factor());
         let builders = [
             self.episodic_factors(),
             self.semantic_factors(),
             self.model_factors(),
             self.perception_factors(),
             self.utility_factors(),
+            appraisal,
         ];
         for b in builders.into_iter().flatten() {
             self.initial.insert(b.skill.skill_name.clone(), b.weights);
