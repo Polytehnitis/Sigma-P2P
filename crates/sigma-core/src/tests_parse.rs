@@ -25,7 +25,8 @@ fn sentences_are_parsed_by_message_passing() {
     let p = g.parse(&words("could you please go ahead and mount my nas for me")).unwrap();
     assert_eq!(p.core(), ["mount", "nas"], "{p:?}");
     assert!(g.parse(&[]).is_none());
-    assert!(g.parse(&vec!["word".to_string(); 13]).is_none(), "too long");
+    assert!(g.parse(&vec!["word".to_string(); crate::parse::MAX_PARSE_WORDS + 1]).is_none(), "too long");
+    assert!(g.parse_in_graph(&vec!["word".to_string(); 13]).is_none(), "too long for the graph");
 }
 
 #[test]
@@ -192,4 +193,116 @@ fn replace_lets_actions_rewrite_working_memory() {
         .register_predicate(&PredicateSchema { name: "Temp".into(), domain_size: 2, role: PredicateRole::Context })
         .unwrap();
     assert!(engine.set_replace("Phase", true).is_ok());
+}
+
+/// Every single-root projective parse of `n` words with every tagging, by brute force.
+fn best_by_enumeration(g: &Grammar, words: &[String]) -> f32 {
+    let n = words.len();
+    let tags_n = crate::parse::TAGS.len();
+    let projective = |heads: &[Option<usize>]| {
+        (0..n).all(|d| match heads[d] {
+            None => true,
+            Some(h) => {
+                let (lo, hi) = (d.min(h), d.max(h));
+                // Every word strictly between an arc's ends descends from its head.
+                (lo + 1..hi).all(|k| {
+                    let mut at = k;
+                    let mut steps = 0;
+                    while let Some(up) = heads[at] {
+                        if up == h {
+                            return true;
+                        }
+                        at = up;
+                        steps += 1;
+                        if steps > n {
+                            return false;
+                        }
+                    }
+                    false
+                })
+            }
+        })
+    };
+    let mut best = f32::NEG_INFINITY;
+    let heads_total = (n + 1).pow(n as u32);
+    for hc in 0..heads_total {
+        let mut code = hc;
+        let heads: Vec<Option<usize>> = (0..n)
+            .map(|_| {
+                let h = code % (n + 1);
+                code /= n + 1;
+                (h < n).then_some(h)
+            })
+            .collect();
+        if heads.iter().enumerate().any(|(i, h)| *h == Some(i)) || !projective(&heads) {
+            continue;
+        }
+        for tc in 0..tags_n.pow(n as u32) {
+            let mut code = tc;
+            let tags: Vec<usize> = (0..n)
+                .map(|_| {
+                    let t = code % tags_n;
+                    code /= tags_n;
+                    t
+                })
+                .collect();
+            let parse = Parse { words: words.to_vec(), tags, heads: heads.clone() };
+            if let Some(s) = g.log_score(&parse) {
+                best = best.max(s);
+            }
+        }
+    }
+    best
+}
+
+#[test]
+fn the_chart_parser_is_exact() {
+    let g = Grammar::english();
+    // Brute force over every tagging and every projective single-root tree.
+    for text in ["mount it", "mount the nas", "please mount drive", "the nas is"] {
+        let w = words(text);
+        let p = g.parse(&w).unwrap();
+        let exact = g.log_score(&p).unwrap();
+        let truth = best_by_enumeration(&g, &w);
+        assert!((exact - truth).abs() < 1e-3, "{text}: {exact} vs {truth}");
+    }
+    // Never worse than loopy max-product in the graph, and sometimes better.
+    let mut better = 0;
+    for text in [
+        "please mount the external drive",
+        "could you please go ahead and mount my nas for me",
+        "mount the nas so the backup is done",
+        "i want you to sync my files to the nas",
+        "make a new backup of the old drive now",
+    ] {
+        let w = words(text);
+        let exact = g.log_score(&g.parse(&w).unwrap()).unwrap();
+        let loopy = g.log_score(&g.parse_in_graph(&w).unwrap()).unwrap();
+        assert!(exact >= loopy - 1e-3, "{text}: exact {exact} < loopy {loopy}");
+        better += usize::from(exact > loopy + 1e-3);
+    }
+    assert!(better >= 1);
+}
+
+#[test]
+fn long_sentences_parse_into_one_projective_tree() {
+    let g = Grammar::english();
+    let text = "could you please go ahead and mount my external nas for me and then make a new backup of the old drive on it with the files from my phone now";
+    let w = words(text);
+    assert!(w.len() > 30);
+    let p = g.parse(&w).unwrap();
+    assert_eq!(p.heads.iter().filter(|h| h.is_none()).count(), 1);
+    // A tree: every word reaches the root.
+    for i in 0..w.len() {
+        let mut at = i;
+        for _ in 0..=w.len() {
+            match p.heads[at] {
+                Some(h) => at = h,
+                None => break,
+            }
+        }
+        assert!(p.heads[at].is_none(), "word {i} is on a cycle");
+    }
+    assert_eq!(p.core()[0], "mount", "{:?}", p.core());
+    assert!(g.log_score(&p).unwrap().is_finite());
 }

@@ -131,6 +131,29 @@ fn max_product_takes_the_exact_envelope_between_slices() {
 }
 
 #[test]
+fn max_product_finds_peaks_inside_slices() {
+    // f(x, y) = x + y times the message m(x) = 1 - x peaks inside the slice, at
+    // x* = (1 - y) / 2, where it is ((1 + y) / 2)². The ends alone would give y.
+    let f = Plm { bounds: vec![vec![0.0, 1.0], vec![0.0, 1.0]], coef: vec![0.0, 1.0, 1.0] };
+    let m = Plm { bounds: vec![vec![0.0, 1.0]], coef: vec![1.0, -1.0] };
+    let out = f.mul_max_out(0, &m);
+    for i in 0..=20 {
+        let y = i as f64 / 20.0 * 0.999;
+        let want = ((1.0 + y) / 2.0).powi(2);
+        let got = out.eval(&[y]);
+        assert!((got - want).abs() <= 1e-5 * want.max(1e-3), "y {y}: {got} vs {want}");
+    }
+    // Maximizing out the other dimension works too: f(y, x) with x second.
+    let g = Plm { bounds: vec![vec![0.0, 1.0], vec![0.0, 1.0]], coef: vec![0.0, 1.0, 1.0] };
+    let out = g.mul_max_out(1, &m);
+    assert!((out.eval(&[0.0]) - 0.25).abs() < 1e-5, "{}", out.eval(&[0.0]));
+    // With a flat message the end-point envelope is still used (and exact).
+    let flat = Plm::constant(vec![vec![0.0, 1.0]], 1.0);
+    let out = f.mul_max_out(0, &flat);
+    assert!((out.eval(&[0.3]) - 1.3).abs() < 1e-6);
+}
+
+#[test]
 fn categories_are_discovered_without_labels() {
     let mut engine = SigmaEngine::new();
     for p in ["Fur", "Wings", "Barks"] {
