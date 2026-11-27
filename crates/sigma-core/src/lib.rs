@@ -436,6 +436,9 @@ pub struct SigmaEngine {
     knowledge: Vec<Arc<knowledge::KnowledgeBase>>,
     /// Atoms of installed knowledge: long-term facts, for which no models are learned.
     knowledge_atoms: HashSet<String>,
+    /// Factors of installed knowledge that no stacked goal reaches, left out of message passing
+    /// during a decision cycle (see [`SigmaEngine::idle_knowledge_mask`]).
+    idle: Option<Vec<bool>>,
 }
 
 impl SigmaEngine {
@@ -939,6 +942,7 @@ impl SigmaEngine {
         }
         // Memories and models join the graph; the last action's models learn what followed it.
         self.rebuild_memory_factors();
+        self.idle = self.idle_knowledge_mask();
         if let Some((a, before)) = self.last.as_ref().and_then(|l| Some((l.action?, l.wm.clone()))) {
             self.learn_action_models(a, &before);
             self.record_experience(a, &before);
@@ -963,6 +967,7 @@ impl SigmaEngine {
             self.percepts.clear();
             self.particle_percepts.clear();
             self.forget_transient();
+            self.idle = None;
             self.appraisal = self.appraise(appraisal, false);
             let replaced = self.replace_working_memory();
             return CycleOutcome { appraisal: self.appraisal.clone(), replaced, ..CycleOutcome::default() };
@@ -1072,6 +1077,7 @@ impl SigmaEngine {
         self.trace = Some(Trace { factors: active, marginals });
         self.prediction = p2;
         self.attended = None;
+        self.idle = None;
         self.episodic.record(self.goal_stack.clone(), self.working_memory(), outcome.selected_action.clone());
         if let Some(action) = outcome.selected_action.clone() {
             outcome.awaiting_confirmation = self.dispatch(action);
@@ -1295,6 +1301,13 @@ impl SigmaEngine {
         self.initial.remove(skill_name);
     }
 
+    /// Whether factor `fi` sits out message passing: outside the attention budget, or idle
+    /// knowledge during a decision cycle.
+    pub(crate) fn masked(&self, fi: usize) -> bool {
+        let out = |m: &Option<Vec<bool>>| m.as_ref().is_some_and(|mask| mask.get(fi) == Some(&false));
+        out(&self.attended) || out(&self.idle)
+    }
+
     fn satisfied(&self, v: usize) -> bool {
         self.vars[v].evidence.is_some_and(|e| e > 0)
     }
@@ -1439,7 +1452,7 @@ impl SigmaEngine {
         let ep = self.inference == Inference::ExpectationPropagation;
         let work: usize = tables.iter().zip(&self.factors).map(|(t, f)| t.len() * f.vars.len()).sum();
         let threads = self.worker_threads(work);
-        let masked = |fi: usize| self.attended.as_ref().is_some_and(|mask| !mask[fi]);
+        let masked = |fi: usize| self.masked(fi);
         let inbound_of = |fi: usize, msgs: &[Vec<Vec<f32>>]| -> Vec<Vec<f32>> {
             let f = &self.factors[fi];
             f.vars

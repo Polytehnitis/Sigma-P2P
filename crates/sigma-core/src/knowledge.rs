@@ -28,6 +28,12 @@
 //! Its data comes from NextKB (Qualitative Reasoning Group, Northwestern University), under
 //! the Creative Commons Attribution 4.0 license; see `knowledge/smem-question-answering/`.
 //!
+//! It also holds the arithmetic and successor facts of two agents of
+//! [Soar-Lean-Agents](https://github.com/SoarGroup/Soar-Lean-Agents) (MIT), with their
+//! procedures rebuilt over retrievals: [`SigmaEngine::add_numbers`] and
+//! [`SigmaEngine::subtract_numbers`] (arithmetic-smem) and [`SigmaEngine::count_add`]
+//! (count-add-smem). See `knowledge/soar-lean-agents/`.
+//!
 //! Starting knowledge is compiled as a skill signed by the node itself, at every start. It is
 //! not stored, synced or offered to peers, since every node already has it, and its predicates
 //! are long-term facts rather than the situation, so no action, transition or structure models
@@ -92,7 +98,7 @@ fn parse_group(tokens: &[String], mut i: usize, graph: &mut SmemGraph) -> Result
         match t.as_str() {
             ")" => return Ok(i),
             "(" | "{" | "}" => return Err(format!("unexpected `{t}` in smem group")),
-            _ if t.starts_with('^') && t.len() > 1 => attr = Some(t[1..].to_string()),
+            _ if t.starts_with('^') && t.len() > 1 => attr = Some(clean(&t[1..])),
             _ => {
                 let a = attr.as_ref().ok_or("value without an attribute")?;
                 let v = identifier(t).unwrap_or_else(|| clean(t));
@@ -142,6 +148,18 @@ fn tokenize(source: &str) -> Result<Vec<String>, String> {
             _ => {
                 let mut s = String::new();
                 while let Some(&c) = chars.peek() {
+                    if c == '|' && s == "^" {
+                        // A quoted attribute, `^|d1|`.
+                        chars.next();
+                        loop {
+                            match chars.next() {
+                                Some('|') => break,
+                                Some(c) => s.push(c),
+                                None => return Err("unterminated |string|".into()),
+                            }
+                        }
+                        continue;
+                    }
                     if c.is_whitespace() || "(){}|".contains(c) {
                         break;
                     }
@@ -177,6 +195,9 @@ pub struct KnowledgeBase {
     /// The identifiers, in order: the values of `<prefix>Retrieved`.
     pub nodes: Vec<String>,
     pub attributes: Vec<Attribute>,
+    /// Whether [`SigmaEngine::answer_text`] reads English questions about it (true by default;
+    /// off for facts that procedures use, such as arithmetic tables).
+    pub english: bool,
 }
 
 /// A retrieval: what a cue recalled.
@@ -288,7 +309,32 @@ impl KnowledgeBase {
     /// Builds a knowledge base from a Soar source holding `smem --add` blocks. Predicates are
     /// named `<prefix><Attribute>`.
     pub fn from_smem(name: &str, prefix: &str, source: &str) -> Result<Self, String> {
+        Self::from_graph(name, prefix, parse_smem(source)?)
+    }
+
+    /// Builds one knowledge base per value of `attribute` (such as `kind`), for a memory that
+    /// holds several kinds of fact or more identifiers than one type may have. The base for
+    /// value `add-fact` is named `<name>-add-fact` with predicates `<prefix>AddFact…`.
+    /// Identifiers without the attribute are left out.
+    pub fn from_smem_by(name: &str, prefix: &str, source: &str, attribute: &str) -> Result<Vec<Self>, String> {
         let graph = parse_smem(source)?;
+        let mut parts: BTreeMap<&str, SmemGraph> = BTreeMap::new();
+        for (node, attrs) in &graph {
+            for v in attrs.get(attribute).into_iter().flatten() {
+                parts.entry(v).or_default().insert(node.clone(), attrs.clone());
+            }
+        }
+        if parts.is_empty() {
+            return Err(format!("no identifier has ^{attribute}"));
+        }
+        parts
+            .into_iter()
+            .map(|(v, g)| Self::from_graph(&format!("{name}-{v}"), &format!("{prefix}{}", camel(v)), g))
+            .collect()
+    }
+
+    /// Builds a knowledge base from a parsed semantic memory.
+    pub fn from_graph(name: &str, prefix: &str, graph: SmemGraph) -> Result<Self, String> {
         if graph.is_empty() {
             return Err("no smem --add facts".into());
         }
@@ -313,7 +359,7 @@ impl KnowledgeBase {
                 Attribute { name: a.to_string(), predicate: format!("{prefix}{}", camel(a)), multi, values }
             })
             .collect();
-        let kb = Self { name: name.into(), prefix: prefix.into(), graph, nodes, attributes };
+        let kb = Self { name: name.into(), prefix: prefix.into(), graph, nodes, attributes, english: true };
         kb.program().ground().map_err(|e| format!("{name}: {e}"))?;
         Ok(kb)
     }
@@ -501,6 +547,11 @@ impl KnowledgeBase {
     }
 }
 
+/// Decimal digits, least significant first.
+fn digits(n: u64) -> Vec<u8> {
+    n.to_string().bytes().rev().map(|b| b - b'0').collect()
+}
+
 enum Mention {
     Node(String),
     Value(String, String),
@@ -517,10 +568,53 @@ impl Question {
     }
 }
 
-/// The starting knowledge every node loads: the smem-question-answering Soar agent's faculty
-/// directory.
+/// Arithmetic facts of the arithmetic-smem agent of Soar-Lean-Agents.
+pub const ARITHMETIC_SOURCE: &str = include_str!("../knowledge/soar-lean-agents/arithmetic.soar");
+/// Successor facts of the count-add-smem agent of Soar-Lean-Agents.
+pub const COUNTING_SOURCE: &str = include_str!("../knowledge/soar-lean-agents/counting.soar");
+/// Knowledge bases of the arithmetic facts: `arithmetic-add-fact`, `-sub-fact`, `-inc-fact` and
+/// `-ten-fact`, one per `^kind`.
+pub const ARITHMETIC: &str = "arithmetic";
+pub const ADD_FACTS: &str = "arithmetic-add-fact";
+pub const SUB_FACTS: &str = "arithmetic-sub-fact";
+pub const INC_FACTS: &str = "arithmetic-inc-fact";
+pub const TEN_FACTS: &str = "arithmetic-ten-fact";
+/// Knowledge base of the successor facts.
+pub const COUNTING: &str = "counting";
+
+/// The starting knowledge every node loads:
+///
+/// * the smem-question-answering Soar agent's faculty directory;
+/// * the arithmetic facts of Soar-Lean-Agents' arithmetic-smem agent (single-digit sums with
+///   carry, differences up to 19 − 10, increments and plus-ten), one base per kind of fact;
+/// * the successor facts of its count-add-smem agent (0 → 1 … 9 → 0).
 pub fn starting_knowledge() -> Vec<KnowledgeBase> {
-    vec![KnowledgeBase::from_smem(SOAR_QA_NAME, SOAR_QA_PREFIX, SOAR_QA_SOURCE).expect("bundled knowledge is valid")]
+    let bundled = "bundled knowledge is valid";
+    let mut out = vec![KnowledgeBase::from_smem(SOAR_QA_NAME, SOAR_QA_PREFIX, SOAR_QA_SOURCE).expect(bundled)];
+    out.extend(KnowledgeBase::from_smem_by(ARITHMETIC, "Arith", ARITHMETIC_SOURCE, "kind").expect(bundled));
+    out.push(KnowledgeBase::from_smem(COUNTING, "Count", COUNTING_SOURCE).expect(bundled));
+    // Digit tables are for the procedures, not for questions about single facts.
+    out.iter_mut().skip(1).for_each(|kb| kb.english = false);
+    out
+}
+
+/// A sum or difference asked in English: "what is 47 plus 38?", "125 - 98", "subtract 3
+/// from 10".
+pub fn parse_arithmetic(text: &str) -> Option<(u64, char, u64)> {
+    let text = text.to_lowercase().replace('+', " plus ").replace(['-', '−'], " minus ");
+    let words: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let numbers: Vec<u64> = words.iter().filter_map(|w| w.parse().ok()).collect();
+    let [a, b] = numbers[..] else { return None };
+    let has = |ws: &[&str]| words.iter().any(|w| ws.contains(w));
+    if has(&["plus", "add", "added", "sum", "and"]) && !has(&["minus", "subtract", "less", "difference"]) {
+        Some((a, '+', b))
+    } else if has(&["subtract", "subtracted"]) && has(&["from"]) {
+        Some((b, '-', a))
+    } else if has(&["minus", "subtract", "less", "difference"]) {
+        Some((a, '-', b))
+    } else {
+        None
+    }
 }
 
 impl SigmaEngine {
@@ -541,6 +635,27 @@ impl SigmaEngine {
     /// The installed knowledge bases.
     pub fn knowledge_bases(&self) -> Vec<&KnowledgeBase> {
         self.knowledge.iter().map(|k| k.as_ref()).collect()
+    }
+
+    /// During a decision cycle, the factors of installed knowledge that no stacked goal reaches
+    /// are left out of elaboration: they cannot change the decision, and a large knowledge base
+    /// would otherwise cost every cycle. Knowledge that a skill links to a goal (a conditional
+    /// over `FacultyIsa(…)`, say) is reached and takes part as usual. `None` when nothing is
+    /// left out.
+    pub(crate) fn idle_knowledge_mask(&self) -> Option<Vec<bool>> {
+        if self.knowledge.is_empty() {
+            return None;
+        }
+        let mut mask: Vec<bool> = self.factors.iter().map(|f| !f.skill.skill_name.starts_with("knowledge:")).collect();
+        if mask.iter().all(|&m| m) {
+            return None;
+        }
+        for g in self.goal_stack.iter().filter_map(|g| self.index.get(g)) {
+            for f in self.reachable(*g).0 {
+                mask[f] = true;
+            }
+        }
+        Some(mask)
     }
 
     /// Whether `name` is an atom of installed knowledge (no models are learned for those).
@@ -619,10 +734,99 @@ impl SigmaEngine {
         Some(Answer { values, retrieval })
     }
 
+    /// One value of `want` of the identifier `kb` retrieves for `cue`.
+    pub fn recall(&self, kb: &str, cue: &[(&str, &str)], want: &str) -> Option<String> {
+        let cue: Vec<(String, String)> = cue.iter().map(|(a, v)| (a.to_string(), v.to_string())).collect();
+        self.ask(kb, &cue)?.get(want).first().cloned()
+    }
+
+    /// Adds two numbers as the arithmetic-smem Soar agent does: column by column from the
+    /// right, the carry folded into the second digit with an increment fact, then the digits'
+    /// sum and carry retrieved as an addition fact. Every step is a retrieval from the
+    /// arithmetic knowledge; `None` if it is not installed.
+    pub fn add_numbers(&self, a: u64, b: u64) -> Option<u64> {
+        let (xs, ys) = (digits(a), digits(b));
+        let mut carry = false;
+        let mut out = Vec::new();
+        for i in 0..xs.len().max(ys.len()) {
+            let d1 = xs.get(i).map_or("0".into(), |d| d.to_string());
+            let mut d2 = ys.get(i).map_or("0".into(), |d| d.to_string());
+            if carry {
+                d2 = self.recall(INC_FACTS, &[("n", &d2)], "next")?;
+            }
+            let cue = [("d1", d1.as_str()), ("d2", d2.as_str())];
+            out.push(self.recall(ADD_FACTS, &cue, "sum")?);
+            carry = self.recall(ADD_FACTS, &cue, "carry")? == "1";
+        }
+        if carry {
+            out.push("1".into());
+        }
+        out.reverse();
+        out.concat().parse().ok()
+    }
+
+    /// Subtracts `b` from `a` as the arithmetic-smem Soar agent does: column by column, a borrow
+    /// folded into the second digit with an increment fact. A missing subtraction fact (the
+    /// first digit is smaller) is a retrieval failure, and then the column borrows: a plus-ten
+    /// fact raises the first digit. `None` if `b > a` or the knowledge is not installed.
+    pub fn subtract_numbers(&self, a: u64, b: u64) -> Option<u64> {
+        if b > a {
+            return None;
+        }
+        let (xs, ys) = (digits(a), digits(b));
+        let mut borrow = false;
+        let mut out = Vec::new();
+        for (i, x) in xs.iter().enumerate() {
+            let mut d1 = x.to_string();
+            let mut d2 = ys.get(i).map_or("0".into(), |d| d.to_string());
+            if borrow {
+                d2 = self.recall(INC_FACTS, &[("n", &d2)], "next")?;
+            }
+            borrow = false;
+            let diff = match self.recall(SUB_FACTS, &[("d1", &d1), ("d2", &d2)], "diff") {
+                Some(diff) => diff,
+                None => {
+                    d1 = self.recall(TEN_FACTS, &[("n", &d1)], "plus10")?;
+                    borrow = true;
+                    self.recall(SUB_FACTS, &[("d1", &d1), ("d2", &d2)], "diff")?
+                }
+            };
+            out.push(diff);
+        }
+        out.reverse();
+        out.concat().parse().ok()
+    }
+
+    /// Adds two digits by counting, as the count-add-smem Soar agent does: `d1` steps to its
+    /// successor `d2` times, with a counter that also counts by successor facts, and the carry
+    /// is set when `d1` passes 9. Returns the digit and the carry.
+    pub fn count_add(&self, d1: u8, d2: u8) -> Option<(u8, bool)> {
+        if d1 > 9 || d2 > 9 {
+            return None;
+        }
+        let (mut d1, mut d3, mut carry) = (d1.to_string(), "0".to_string(), false);
+        while d3 != d2.to_string() {
+            carry |= d1 == "9";
+            d1 = self.recall(COUNTING, &[("symbol", &d1)], "next")?;
+            d3 = self.recall(COUNTING, &[("symbol", &d3)], "next")?;
+        }
+        Some((d1.parse().ok()?, carry))
+    }
+
     /// Answers an English question from the first installed knowledge base that understands
-    /// it, as a sentence.
+    /// it, as a sentence. Sums and differences ("what is 47 plus 38?") are worked out with the
+    /// arithmetic facts.
     pub fn answer_text(&self, text: &str) -> Option<String> {
-        self.knowledge.iter().find_map(|kb| {
+        if let Some((a, op, b)) = parse_arithmetic(text) {
+            let (word, result) = match op {
+                '+' => ("plus", self.add_numbers(a, b)),
+                _ => ("minus", self.subtract_numbers(a, b)),
+            };
+            if let Some(r) = result {
+                return Some(format!("{a} {word} {b} is {r}."));
+            }
+        }
+        self.knowledge.iter().filter(|kb| kb.english).find_map(|kb| {
             let q = kb.parse_question(text)?;
             let a = self.answer(&kb.name, &q)?;
             Some(kb.say(&q, &a))
