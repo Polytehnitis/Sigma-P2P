@@ -3,6 +3,7 @@
 //! Every local write of replicated state also stamps a register in the `sync` table, so the
 //! store can hand its whole [`SyncState`] to the user's other devices and merge theirs back.
 
+use crate::graph_memory::{ActionModel, LearnedModels};
 use crate::sync::{keys, next_clock, Register, Stamp, SyncReport, SyncState};
 use crate::{
     crypto, language, ActionManifest, EpisodicMemory, NodeIdentity, PredicateSchema, SemanticMemory, SigmaEngine,
@@ -168,7 +169,8 @@ impl FactorStore {
 
     /// Persists the engine's episodic and semantic memories, merged into what is stored (which
     /// may already hold memories synced from the user's other devices), and its learned action
-    /// and reward models (kept on this device).
+    /// and reward models. Each action's models are a register, so they reach the user's paired
+    /// devices (and no one else); the newest write of an action's models wins.
     pub fn save_memories(&self, engine: &SigmaEngine) -> StoreResult<()> {
         let models = postcard::to_allocvec(&engine.models)?;
         self.write(|tx| {
@@ -177,6 +179,10 @@ impl FactorStore {
             semantic.merge(&engine.semantic);
             write_memories(tx, &episodic, &semantic)?;
             tx.open_table(MEMORIES)?.insert("models", models.as_slice())?;
+            for action in engine.models.actions() {
+                let bytes = postcard::to_allocvec(&engine.models.action_model(&action))?;
+                stamp(tx, &keys::model(&action), Some(bytes))?;
+            }
             Ok(())
         })
     }
@@ -300,6 +306,15 @@ impl FactorStore {
                 }
             } else if key == keys::GOALS {
                 engine.goal_stack = self.load_goal_stack()?;
+            } else if let Some(action) = key.strip_prefix(keys::MODEL) {
+                // The register that won, if it holds a valid model (an invalid one was not applied).
+                let tx = self.db.begin_read()?;
+                let row = tx.open_table(SYNC)?.get(key.as_str())?.map(|g| g.value().to_vec());
+                let register = row.map(|b| postcard::from_bytes::<Register>(&b)).transpose()?;
+                let model = register.and_then(|r| r.value).and_then(|v| postcard::from_bytes::<ActionModel>(&v).ok());
+                if let Some(model) = model {
+                    engine.adopt_action_model(action, model);
+                }
             }
         }
         if report.memories_changed {
@@ -477,6 +492,16 @@ fn apply_register(tx: &WriteTransaction, key: &str, value: Option<&[u8]>, own: &
             if p.name == name {
                 tx.open_table(PREDICATES)?.insert(name, v)?;
             }
+        }
+    } else if let Some(action) = key.strip_prefix(keys::MODEL) {
+        // Validated before it reaches the stored models (and, through them, the graph).
+        let model = value.map(postcard::from_bytes::<ActionModel>).transpose().ok().flatten();
+        if let Some(model) = model.filter(|m| m.is_valid() && !action.is_empty()) {
+            let mut t = tx.open_table(MEMORIES)?;
+            let stored = t.get("models")?.map(|g| postcard::from_bytes::<LearnedModels>(g.value())).transpose()?;
+            let mut models = stored.unwrap_or_default();
+            models.set_action_model(action, model);
+            t.insert("models", postcard::to_allocvec(&models)?.as_slice())?;
         }
     } else if let Some(hex) = key.strip_prefix(keys::DEVICE) {
         if let (Ok(pk), Some(_)) = (crypto::pubkey_from_hex(hex), value) {

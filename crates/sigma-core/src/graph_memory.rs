@@ -78,6 +78,67 @@ pub struct LearnedModels {
     pub rewards: BTreeMap<String, Vec<f32>>,
 }
 
+/// Everything learned about one action: its reward model and its effect on each modeled
+/// predicate. The unit that syncs between the user's devices (one register per action, the
+/// newest write winning), since an action's models are learned together.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ActionModel {
+    pub reward: Option<Vec<f32>>,
+    pub effects: BTreeMap<String, Vec<f32>>,
+}
+
+/// Longest action or predicate name a synced model may carry.
+const MAX_MODEL_NAME: usize = 128;
+
+impl ActionModel {
+    /// Bounds checks for a model received from another device.
+    pub fn is_valid(&self) -> bool {
+        let table_ok = |t: &Vec<f32>| t.iter().all(|v| v.is_finite() && (0.0..=MAX_FACTOR_VALUE).contains(v));
+        self.reward.as_ref().is_none_or(|t| t.len() == 4 && table_ok(t))
+            && self.effects.len() <= MAX_MODEL_FACTORS
+            && self.effects.iter().all(|(p, t)| {
+                !p.is_empty()
+                    && p.len() <= MAX_MODEL_NAME
+                    && !internal(p)
+                    && t.len() % 2 == 0
+                    && (2..=2 * MAX_MODEL_DOMAIN).contains(&t.len())
+                    && table_ok(t)
+            })
+    }
+}
+
+impl LearnedModels {
+    /// The actions with any learned model.
+    pub fn actions(&self) -> std::collections::BTreeSet<String> {
+        self.rewards.keys().chain(self.effects.keys().map(|(a, _)| a)).cloned().collect()
+    }
+
+    /// Everything learned about `action`.
+    pub fn action_model(&self, action: &str) -> ActionModel {
+        ActionModel {
+            reward: self.rewards.get(action).cloned(),
+            effects: self
+                .effects
+                .iter()
+                .filter(|((a, _), _)| a == action)
+                .map(|((_, p), t)| (p.clone(), t.clone()))
+                .collect(),
+        }
+    }
+
+    /// Replaces everything learned about `action` with `model`.
+    pub fn set_action_model(&mut self, action: &str, model: ActionModel) {
+        self.effects.retain(|(a, _), _| a != action);
+        self.rewards.remove(action);
+        if let Some(t) = model.reward {
+            self.rewards.insert(action.to_string(), t);
+        }
+        for (p, t) in model.effects {
+            self.effects.insert((action.to_string(), p), t);
+        }
+    }
+}
+
 /// Factors of one internal skill being built.
 struct Builder {
     skill: Arc<Skill>,
@@ -316,6 +377,20 @@ impl SigmaEngine {
             }
         }
         Some(b)
+    }
+
+    /// Adopts what another of the user's devices learned about `action`, replacing this
+    /// device's models of it, and rebuilds the model factors from them.
+    pub fn adopt_action_model(&mut self, action: &str, model: ActionModel) -> bool {
+        if action.is_empty() || action.len() > MAX_MODEL_NAME || internal(action) || !model.is_valid() {
+            return false;
+        }
+        self.save_models();
+        self.models.set_action_model(action, model);
+        // Drop the old model factors first, so the rebuild does not copy them back.
+        self.factors.retain(|f| !(f.memory && f.skill.skill_name == MODEL_SKILL));
+        self.rebuild_memory_factors();
+        true
     }
 
     /// Copies the model factors' learned tables back into [`LearnedModels`].

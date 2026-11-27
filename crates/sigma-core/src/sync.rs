@@ -91,6 +91,8 @@ pub mod keys {
     pub const GOALS: &str = "state/goals";
     /// Phrases the user taught the language layer (normalized phrase -> intent).
     pub const PHRASE: &str = "phrase/";
+    /// What an action was learned to do (its reward and effect models), per action.
+    pub const MODEL: &str = "model/";
 
     pub fn reputation(pubkey: &[u8; 32]) -> String {
         format!("{REPUTATION}{}", crypto::to_hex(pubkey))
@@ -106,6 +108,10 @@ pub mod keys {
 
     pub fn phrase(normalized: &str) -> String {
         format!("{PHRASE}{normalized}")
+    }
+
+    pub fn model(action: &str) -> String {
+        format!("{MODEL}{action}")
     }
 
     pub fn device(pubkey: &[u8; 32]) -> String {
