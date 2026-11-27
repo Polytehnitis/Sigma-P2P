@@ -31,6 +31,26 @@ pub enum Selection {
     ProbabilityMatching,
     /// An operator sampled in proportion to `exp(p / temperature)`.
     Boltzmann { temperature: f32 },
+    /// Boltzmann selection under a temperature schedule, as Sigma anneals its choices: the
+    /// temperature starts at `start` and is multiplied by `decay` after every sampled
+    /// decision, never going below `floor`. Hot at first (exploring), nearly greedy later.
+    Annealed { start: f32, decay: f32, floor: f32 },
+}
+
+impl Selection {
+    /// The temperature after `decisions` sampled decisions (`None` for unsampled policies).
+    pub fn temperature_after(self, decisions: u64) -> Option<f32> {
+        let sane = |t: f32| if t.is_finite() && t > 0.0 { t } else { 1e-3 };
+        match self {
+            Selection::Boltzmann { temperature } => Some(sane(temperature)),
+            Selection::Annealed { start, decay, floor } => {
+                let decay = if decay.is_finite() { decay.clamp(0.0, 1.0) } else { 1.0 };
+                let k = decisions.min(i32::MAX as u64) as i32;
+                Some(sane((start * decay.powi(k)).max(floor)))
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,8 +170,8 @@ impl SigmaEngine {
     /// The operator distribution over ranked candidates under the selection policy.
     pub(crate) fn operator_distribution(&self, ranked: &[(usize, f32)]) -> Vec<(usize, f32)> {
         let weights: Vec<f32> = match self.selection {
-            Selection::Boltzmann { temperature } => {
-                let t = if temperature.is_finite() && temperature > 0.0 { temperature } else { 1e-3 };
+            Selection::Boltzmann { .. } | Selection::Annealed { .. } => {
+                let t = self.selection.temperature_after(self.decisions).expect("sampled");
                 let max = ranked.iter().map(|c| c.1).fold(f32::MIN, f32::max);
                 ranked.iter().map(|c| ((c.1 - max) / t).exp()).collect()
             }

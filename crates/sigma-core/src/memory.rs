@@ -12,6 +12,9 @@ use std::collections::{BTreeMap, VecDeque};
 pub const EPISODIC_CAPACITY: usize = 1024;
 /// Chance that a stored value is misremembered (keeps partial matches alive).
 pub(crate) const NOISE: f32 = 0.05;
+/// Prior weight of a new concept in unsupervised category learning (the rational model's
+/// coupling: larger makes new concepts likelier).
+pub const NEW_CONCEPT: f32 = 1.0;
 /// Per-cycle decay of the recency prior.
 pub(crate) const RECENCY: f32 = 0.01;
 
@@ -180,6 +183,33 @@ impl SemanticMemory {
             }
             counts[*x] += 1.0;
         }
+    }
+
+    /// Unsupervised category learning, as Sigma's and Anderson's rational model of
+    /// categorization: the object joins the existing concept that best explains it (a prior
+    /// proportional to each concept's size times the likelihood of its features), or starts a
+    /// new concept when that is likelier (prior [`NEW_CONCEPT`], uniform likelihood). A new
+    /// concept is named after its first object (`concept-<hash>`), so devices that discover the
+    /// same concept from the same object agree on its name. Returns the concept learned.
+    pub fn discover(&mut self, features: &[(String, usize)]) -> String {
+        let d = |f: &str, x: usize| self.domains.get(f).copied().unwrap_or(2).max(x + 1).max(2) as f32;
+        let fresh: f32 = features.iter().fold(NEW_CONCEPT, |p, (f, x)| p / d(f, *x));
+        let best = self
+            .concepts
+            .iter()
+            .map(|(name, c)| (name.clone(), features.iter().fold(c.count, |p, (f, x)| p * self.likelihood(c, f, *x))))
+            .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(&a.0)));
+        let name = match best {
+            Some((name, p)) if p >= fresh => name,
+            _ => {
+                let mut sorted = features.to_vec();
+                sorted.sort();
+                let key = postcard::to_allocvec(&sorted).expect("in-memory encoding cannot fail");
+                format!("concept-{}", &blake3::hash(&key).to_hex()[..8])
+            }
+        };
+        self.learn(&name, features);
+        name
     }
 
     /// CRDT join with another replica: every count becomes the larger of the two (a max-register

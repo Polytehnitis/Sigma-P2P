@@ -171,8 +171,13 @@ impl Plm {
     }
 
     /// Multiplies by `m(x_d)` and maximizes dimension `d` out (max-product). The maximum of
-    /// each linear piece over its slice is exact (it lies at an end of the slice); between
-    /// slices, the piece that is largest at the region's centre is kept.
+    /// each linear piece over its slice lies at an end of the slice, so every slice gives two
+    /// candidate linear functions of the remaining dimensions. When one dimension remains (every
+    /// message, and every two-slot factor), the result is their exact upper envelope: each
+    /// region is split where candidates cross, and each part keeps the candidate that is
+    /// largest there. With more dimensions left, the candidate largest at the region's centre
+    /// is kept. (Within a slice, the product with a sloped message is quadratic; its maximum is
+    /// still taken at the slice's ends.)
     pub fn mul_max_out(&self, d: usize, m: &Plm) -> Plm {
         let mut p = self.clone();
         p.bounds[d] = merge_bounds(&self.bounds[d], &m.bounds[0]);
@@ -181,36 +186,70 @@ impl Plm {
         let shape = p.shape();
         let mut bounds = p.bounds.clone();
         bounds.remove(d);
-        let mut out = Plm::constant(bounds, 0.0);
-        for_each_index(&out.shape(), |r_out, idx| {
+        let base = Plm::constant(bounds.clone(), 0.0);
+        // Candidate linear functions (`[c0, c1, …]` over the remaining dimensions) per region.
+        let mut candidates: Vec<Vec<Vec<f64>>> = vec![Vec::new(); base.regions()];
+        for_each_index(&base.shape(), |r_out, idx| {
             let mut full = idx.to_vec();
             full.insert(d, 0);
-            let centre: Vec<f64> = idx
-                .iter()
-                .enumerate()
-                .map(|(i, &k)| {
-                    let b = &out.bounds[i];
-                    (b[k] + b[k + 1]) / 2.0
-                })
-                .collect();
-            let mut best: Option<(f64, Vec<f64>)> = None;
             for k in 0..shape[d] {
                 full[d] = k;
                 let c = p.region(flat(&full, &shape));
                 let (a, b) = (p.bounds[d][k], p.bounds[d][k + 1]);
-                // The product with m on this slice, at both ends of the slice.
                 for x in [a, b - (b - a) * 1e-9] {
                     let mx = m.eval(&[x]);
                     let mut lin: Vec<f64> = Vec::with_capacity(n);
                     lin.push((c[0] + c[d + 1] * x) * mx);
                     lin.extend(c[1..].iter().enumerate().filter(|&(i, _)| i != d).map(|(_, &ci)| ci * mx));
-                    let v = lin[0] + lin[1..].iter().zip(&centre).map(|(a, b)| a * b).sum::<f64>();
-                    if best.as_ref().is_none_or(|(bv, _)| v > *bv) {
-                        best = Some((v, lin));
+                    candidates[r_out].push(lin);
+                }
+            }
+        });
+        let value = |lin: &[f64], at: &[f64]| lin[0] + lin[1..].iter().zip(at).map(|(a, b)| a * b).sum::<f64>();
+        let best_at = |cands: &[Vec<f64>], at: &[f64]| -> Option<Vec<f64>> {
+            cands.iter().max_by(|a, b| value(a, at).total_cmp(&value(b, at))).cloned()
+        };
+        if bounds.len() == 1 {
+            // One dimension left: split each region where two candidates cross.
+            let old = &bounds[0];
+            let mut cuts: Vec<f64> = old.clone();
+            for (r, cands) in candidates.iter().enumerate() {
+                let (lo, hi) = (old[r], old[r + 1]);
+                for (i, a) in cands.iter().enumerate() {
+                    for b in &cands[i + 1..] {
+                        let slope = a[1] - b[1];
+                        if slope.abs() > 1e-12 {
+                            let y = (b[0] - a[0]) / slope;
+                            if y > lo + 1e-12 && y < hi - 1e-12 {
+                                cuts.push(y);
+                            }
+                        }
                     }
                 }
             }
-            if let Some((_, lin)) = best {
+            cuts.sort_by(f64::total_cmp);
+            cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+            let mut out = Plm::constant(vec![cuts.clone()], 0.0);
+            for k in 0..cuts.len() - 1 {
+                let mid = (cuts[k] + cuts[k + 1]) / 2.0;
+                let r = old.partition_point(|&b| b <= mid).saturating_sub(1).min(candidates.len() - 1);
+                if let Some(lin) = best_at(&candidates[r], &[mid]) {
+                    out.coef[k * n..(k + 1) * n].copy_from_slice(&lin);
+                }
+            }
+            return out;
+        }
+        let mut out = base;
+        for_each_index(&out.shape(), |r_out, idx| {
+            let centre: Vec<f64> = idx
+                .iter()
+                .enumerate()
+                .map(|(i, &k)| {
+                    let b = &bounds[i];
+                    (b[k] + b[k + 1]) / 2.0
+                })
+                .collect();
+            if let Some(lin) = best_at(&candidates[r_out], &centre) {
                 out.coef[r_out * n..(r_out + 1) * n].copy_from_slice(&lin);
             }
         });
