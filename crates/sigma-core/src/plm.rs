@@ -186,16 +186,23 @@ impl Plm {
     ///   chord between knots is within [`MAX_PRODUCT_TOLERANCE`] (relative) of it. The maximum
     ///   of quadratics over `x` is convex in `y`, so the chords lie on or just above it.
     ///
-    /// With more dimensions left, the candidate largest at the region's centre is kept.
+    /// With two or more dimensions left the maximum is a convex function of them. Each cell
+    /// gets the plane tangent to it at the cell's centre, and cells are cut in half until the
+    /// plane matches the maximum at every corner within [`MAX_PRODUCT_TOLERANCE`] or the
+    /// budget ([`MAX_REFINED_REGIONS`] cells, [`MAX_REFINE_ROUNDS`] rounds) runs out. The
+    /// result never exceeds the true maximum; it is exact in cells that match, which includes
+    /// every kink that follows an axis. A kink across the axes cannot be held by axis-aligned
+    /// cells, so near one the result is off by about the slopes' difference times a cell's size.
     pub fn mul_max_out(&self, d: usize, m: &Plm) -> Plm {
         if self.dims() == 2 {
             if let Some(out) = self.mul_max_out_quadratic(d, m) {
                 return out;
             }
         }
-        let mut p = self.clone();
-        p.bounds[d] = merge_bounds(&self.bounds[d], &m.bounds[0]);
-        let p = self.refine(d, &p.bounds[d]);
+        let p = self.refine(d, &merge_bounds(&self.bounds[d], &m.bounds[0]));
+        if p.dims() >= 3 {
+            return p.mul_max_out_nd(d, m);
+        }
         let n = p.dims();
         let shape = p.shape();
         let mut bounds = p.bounds.clone();
@@ -253,21 +260,156 @@ impl Plm {
             }
             return out;
         }
+        // No dimension left: the largest candidate value.
         let mut out = base;
-        for_each_index(&out.shape(), |r_out, idx| {
-            let centre: Vec<f64> = idx
-                .iter()
-                .enumerate()
-                .map(|(i, &k)| {
-                    let b = &bounds[i];
-                    (b[k] + b[k + 1]) / 2.0
-                })
-                .collect();
-            if let Some(lin) = best_at(&candidates[r_out], &centre) {
-                out.coef[r_out * n..(r_out + 1) * n].copy_from_slice(&lin);
-            }
-        });
+        if let Some(lin) = candidates.first().and_then(|c| best_at(c, &[])) {
+            out.coef[..n].copy_from_slice(&lin);
+        }
         out
+    }
+
+    /// [`Plm::mul_max_out`] with two or more dimensions `y` left, on a function already cut
+    /// along `d` wherever the message changes.
+    ///
+    /// For fixed `x` the product is linear in `y`, so `f(y) = max_x` of it is convex. In each
+    /// cell the result is the plane tangent to `f` at the cell's centre (the product at the
+    /// maximizing `x` there). A tangent plane never exceeds `f`, and `f` minus it is convex, so
+    /// its largest gap is at a corner: a cell whose corners all match within
+    /// [`MAX_PRODUCT_TOLERANCE`] (relative to the largest value) is within that tolerance
+    /// everywhere. Cells that miss are cut in half along the dimension with the largest gap,
+    /// for up to [`MAX_REFINE_ROUNDS`] rounds and [`MAX_REFINED_REGIONS`] cells. Where every
+    /// peak lies at a slice end `f` is a maximum of planes, and a matching cell is exact.
+    /// Beyond [`MAX_CORNER_DIMS`] dimensions left, cells are not checked or cut.
+    fn mul_max_out_nd(&self, d: usize, m: &Plm) -> Plm {
+        let n = self.dims();
+        let shape = self.shape();
+        let others: Vec<usize> = (0..n).filter(|&i| i != d).collect();
+        let orig: Vec<Vec<f64>> = others.iter().map(|&i| self.bounds[i].clone()).collect();
+        // Per slice of x: (a, b, α, β), the message being α + β·x there.
+        let slices: Vec<(f64, f64, f64, f64)> = (0..shape[d])
+            .map(|k| {
+                let (a, b) = (self.bounds[d][k], self.bounds[d][k + 1]);
+                let (xa, xb) = (a + (b - a) * 0.25, a + (b - a) * 0.75);
+                let (ma, mb) = (m.eval(&[xa]), m.eval(&[xb]));
+                let beta = (mb - ma) / (xb - xa);
+                (a, b, ma - beta * xa, beta)
+            })
+            .collect();
+        let coef_at = |idx: &[usize], k: usize| {
+            let mut full = idx.to_vec();
+            full.insert(d, k);
+            self.region(flat(&full, &shape))
+        };
+        // The exact maximum over x at y in the region `idx` of y, and where it is.
+        let best = |idx: &[usize], y: &[f64]| -> (f64, usize, f64) {
+            let mut top = (f64::NEG_INFINITY, 0, 0.0);
+            for (k, &(a, b, alpha, beta)) in slices.iter().enumerate() {
+                let c = coef_at(idx, k);
+                let cx = c[d + 1];
+                let base = c[0] + others.iter().zip(y).map(|(&i, &yi)| c[i + 1] * yi).sum::<f64>();
+                let g = |x: f64| (base + cx * x) * (alpha + beta * x);
+                let b_in = b - (b - a) * 1e-9;
+                let curvature = cx * beta;
+                let peak = if curvature < -1e-12 {
+                    (-(cx * alpha + beta * base) / (2.0 * curvature)).clamp(a, b_in)
+                } else {
+                    a
+                };
+                for x in [a, b_in, peak] {
+                    let v = g(x);
+                    if v > top.0 {
+                        top = (v, k, x);
+                    }
+                }
+            }
+            top
+        };
+        // The plane tangent to the maximum at y0: the product at the maximizing x.
+        let tangent = |idx: &[usize], y0: &[f64]| -> Vec<f64> {
+            let (_, k, x) = best(idx, y0);
+            let (_, _, alpha, beta) = slices[k];
+            let c = coef_at(idx, k);
+            let mx = alpha + beta * x;
+            let mut lin = Vec::with_capacity(n);
+            lin.push((c[0] + c[d + 1] * x) * mx);
+            lin.extend(others.iter().map(|&i| c[i + 1] * mx));
+            lin
+        };
+        let value = |lin: &[f64], y: &[f64]| lin[0] + lin[1..].iter().zip(y).map(|(a, b)| a * b).sum::<f64>();
+        let rest = others.len();
+        let mut cuts = orig.clone();
+        for round in 0..=MAX_REFINE_ROUNDS {
+            let mut out = Plm::constant(cuts.clone(), 0.0);
+            let check = rest <= MAX_CORNER_DIMS && round < MAX_REFINE_ROUNDS;
+            let mut scale = 0.0f64;
+            // Cells that miss: (gap, dimension to cut, where).
+            let mut misses: Vec<(f64, usize, f64)> = Vec::new();
+            for_each_index(&out.shape(), |r, cell| {
+                let lo: Vec<f64> = cell.iter().enumerate().map(|(j, &k)| cuts[j][k]).collect();
+                let hi: Vec<f64> = cell.iter().enumerate().map(|(j, &k)| cuts[j][k + 1]).collect();
+                let centre: Vec<f64> = lo.iter().zip(&hi).map(|(a, b)| 0.5 * (a + b)).collect();
+                let idx: Vec<usize> = centre
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &y)| orig[j].partition_point(|&e| e <= y).saturating_sub(1).min(orig[j].len() - 2))
+                    .collect();
+                let lin = tangent(&idx, &centre);
+                out.coef[r * n..(r + 1) * n].copy_from_slice(&lin);
+                if !check {
+                    return;
+                }
+                let mut gap = 0.0f64;
+                for corner in 0..1usize << rest {
+                    let y: Vec<f64> = (0..rest).map(|j| if corner >> j & 1 == 1 { hi[j] } else { lo[j] }).collect();
+                    let f = best(&idx, &y).0;
+                    scale = scale.max(f.abs());
+                    gap = gap.max(f - value(&lin, &y));
+                }
+                if gap <= 0.0 {
+                    return;
+                }
+                // Cut where the gap along an axis is largest (widest cell side on a tie).
+                let (mut dim, mut along) = (0, f64::NEG_INFINITY);
+                for j in 0..rest {
+                    let mut y = centre.clone();
+                    let mut g = 0.0f64;
+                    for end in [lo[j], hi[j]] {
+                        y[j] = end;
+                        g = g.max(best(&idx, &y).0 - value(&lin, &y));
+                    }
+                    let span = orig[j][orig[j].len() - 1] - orig[j][0];
+                    let key = g + 1e-15 * (hi[j] - lo[j]) / span.max(EPS);
+                    if key > along {
+                        (dim, along) = (j, key);
+                    }
+                }
+                misses.push((gap, dim, centre[dim]));
+            });
+            let tolerance = MAX_PRODUCT_TOLERANCE * scale.max(1e-300);
+            misses.retain(|q| q.0 > tolerance);
+            if misses.is_empty() || !check {
+                return out;
+            }
+            // Add the worst cells' cuts first while the grid stays within the budget.
+            misses.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let mut added = false;
+            for (_, j, at) in misses {
+                if cuts[j].iter().any(|&e| (e - at).abs() < 1e-12) {
+                    continue;
+                }
+                let size: usize = cuts.iter().enumerate().map(|(i, c)| c.len() - 1 + usize::from(i == j)).product();
+                if size > MAX_REFINED_REGIONS {
+                    continue;
+                }
+                let at_pos = cuts[j].partition_point(|&e| e < at);
+                cuts[j].insert(at_pos, at);
+                added = true;
+            }
+            if !added {
+                return out;
+            }
+        }
+        unreachable!("the last round returns")
     }
 
     /// [`Plm::mul_max_out`] for two dimensions when some slice's product with the message peaks
@@ -623,6 +765,12 @@ impl Plm {
 pub const MAX_PRODUCT_TOLERANCE: f64 = 1e-6;
 /// Deepest bisection when placing those knots.
 const MAX_BISECTIONS: usize = 24;
+/// Most rounds of cutting cells in [`Plm::mul_max_out`] with two or more dimensions left.
+pub const MAX_REFINE_ROUNDS: usize = 12;
+/// Most cells of that result.
+pub const MAX_REFINED_REGIONS: usize = 1 << 12;
+/// Most dimensions left for which cells are checked at their corners.
+pub const MAX_CORNER_DIMS: usize = 8;
 
 /// The sorted union of two boundary lists (boundaries closer than `1e-12` are merged).
 pub fn merge_bounds(a: &[f64], b: &[f64]) -> Vec<f64> {
