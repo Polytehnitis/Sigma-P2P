@@ -195,6 +195,20 @@ impl FactorStore {
         self.write(|tx| stamp(tx, keys::GOALS, Some(postcard::to_allocvec(goals)?)))
     }
 
+    /// Persists the operator preferences, which follow the user across devices (newest wins).
+    pub fn save_preferences(&self, preferences: &[crate::Preference]) -> StoreResult<()> {
+        self.write(|tx| stamp(tx, keys::PREFERENCES, Some(postcard::to_allocvec(preferences)?)))
+    }
+
+    /// The stored operator preferences (bounded; an unreadable value reads as none).
+    pub fn load_preferences(&self) -> StoreResult<Vec<crate::Preference>> {
+        let state = self.export_sync_state()?;
+        let value = state.registers.get(keys::PREFERENCES).and_then(|r| r.value.as_deref());
+        let mut prefs: Vec<crate::Preference> = value.and_then(|v| postcard::from_bytes(v).ok()).unwrap_or_default();
+        prefs.truncate(crate::decision::MAX_PREFERENCES);
+        Ok(prefs)
+    }
+
     pub fn load_goal_stack(&self) -> StoreResult<Vec<String>> {
         let state = self.export_sync_state()?;
         let value = state.registers.get(keys::GOALS).and_then(|r| r.value.as_deref());
@@ -309,6 +323,8 @@ impl FactorStore {
                 }
             } else if key == keys::GOALS {
                 engine.goal_stack = self.load_goal_stack()?;
+            } else if key == keys::PREFERENCES {
+                engine.preferences = self.load_preferences()?;
             } else if let Some(action) = key.strip_prefix(keys::MODEL) {
                 // The register that won, if it holds a valid model (an invalid one was not applied).
                 let tx = self.db.begin_read()?;

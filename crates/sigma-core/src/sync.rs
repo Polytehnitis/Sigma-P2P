@@ -89,6 +89,8 @@ pub mod keys {
     pub const PREDICATE: &str = "pred/";
     pub const DEVICE: &str = "dev/";
     pub const GOALS: &str = "state/goals";
+    /// Operator preferences (see [`crate::decision`]).
+    pub const PREFERENCES: &str = "state/preferences";
     /// Phrases the user taught the language layer (normalized phrase -> intent).
     pub const PHRASE: &str = "phrase/";
     /// What an action was learned to do (its reward and effect models), per action.

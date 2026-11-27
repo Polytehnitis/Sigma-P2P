@@ -11,6 +11,7 @@
 
 pub mod actions;
 pub mod crypto;
+pub mod decision;
 pub mod demos;
 mod exact;
 pub mod graph_memory;
@@ -31,6 +32,7 @@ use std::sync::Arc;
 
 pub use actions::{ActionManifest, ActionSpec, ConfirmationGate, PendingAction, Undone};
 pub use crypto::NodeIdentity;
+pub use decision::{Preference, PreferenceKind, Selection};
 pub use graph_memory::{ActionModel, LearnedModels};
 pub use language::{Intent, Interpretation, PhraseBook, Route};
 pub use memory::{Episode, EpisodicMemory, SemanticMemory, SemanticRecall};
@@ -237,6 +239,9 @@ pub struct CycleOutcome {
     /// signed and compiled when `chunk_author` is set, else unsigned, for the host to adopt
     /// with [`SigmaEngine::learn_chunk`].
     pub chunk: Option<SkillPackage>,
+    /// The operator distribution of this cycle's decision: each candidate action, after
+    /// preferences, with its selection probability under the selection policy.
+    pub operators: Vec<(String, f32)>,
 }
 
 /// A particle message over a continuous predicate: weighted samples of its value.
@@ -325,6 +330,14 @@ pub struct SigmaEngine {
     pub chunk_author: Option<NodeIdentity>,
     /// Signed chunks waiting to be compiled at the start of the next cycle.
     pending_chunks: Vec<SkillPackage>,
+    /// How an operator is selected from the operator distribution.
+    pub selection: Selection,
+    /// Seed of sampled selections, so a run is reproducible.
+    pub selection_seed: u64,
+    /// Sampled selections so far (varies the sample from one decision to the next).
+    decisions: u64,
+    /// Preferences over operators (see [`decision`]).
+    pub preferences: Vec<Preference>,
 }
 
 impl SigmaEngine {
@@ -662,7 +675,7 @@ impl SigmaEngine {
         let repeats = |a: usize| {
             last.as_ref().is_some_and(|(action, w, g)| *action == Some(a) && same_evidence(w, &wm) && *g == goals)
         };
-        let substate::Decision { selected, impasse, substate } = self.decide(&elaboration, repeats);
+        let substate::Decision { selected, impasse, substate, operators } = self.decide(&elaboration, repeats);
         let substate::Elaboration { p1, p2, top, top_factors, .. } = elaboration;
         // Chunking: a substate that settled the impasse leaves a rule behind.
         let chunk = match (&substate, selected) {
@@ -748,6 +761,7 @@ impl SigmaEngine {
             substate,
             awaiting_confirmation: None,
             chunk,
+            operators: operators.into_iter().map(|(v, p)| (self.vars[v].schema.name.clone(), p)).collect(),
         };
         self.trace = Some(Trace { factors: active, marginals });
         self.prediction = p2;
@@ -1172,6 +1186,8 @@ mod tests_actions;
 mod tests_affine;
 #[cfg(test)]
 mod tests_continuous;
+#[cfg(test)]
+mod tests_decision;
 #[cfg(test)]
 mod tests_exact;
 #[cfg(test)]
