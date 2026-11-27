@@ -15,6 +15,7 @@ pub mod crypto;
 pub mod decision;
 pub mod demos;
 mod exact;
+pub mod generalize;
 pub mod graph_memory;
 pub mod language;
 pub mod map;
@@ -290,8 +291,9 @@ struct LastDecision {
     wm: Vec<Option<usize>>,
     goals: Vec<String>,
     impasse: Option<(ImpasseKind, u32)>,
-    /// The state the action was chosen in, for backing up its utility.
+    /// The state the action was chosen in, and its features, for backing up its utility.
     state: String,
+    features: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -364,6 +366,13 @@ pub struct SigmaEngine {
     pub inference: Inference,
     /// Soft evidence on the appraisal predicates from the last cycle's appraisal.
     appraisal_priors: HashMap<usize, Vec<f32>>,
+    /// Transitions lived, for structure learning (see [`generalize`]).
+    experience: VecDeque<generalize::Experience>,
+    /// Transitions since the last structure-learning pass.
+    since_structure: usize,
+    /// Turns off automatic structure learning of transition parents and perception models
+    /// (it still runs on demand with [`SigmaEngine::learn_model_structure`]).
+    pub fixed_structure: bool,
 }
 
 impl SigmaEngine {
@@ -731,13 +740,16 @@ impl SigmaEngine {
             let _ = self.compile_skill(chunk);
         }
         // The last action's utility is backed up from the reward since and the state it led to.
-        if let Some((a, state)) = self.last.as_ref().and_then(|l| Some((l.action?, l.state.clone()))) {
-            self.back_up_utility(&state, a, self.last_reward);
+        if let Some((a, state, features)) =
+            self.last.as_ref().and_then(|l| Some((l.action?, l.state.clone(), l.features.clone())))
+        {
+            self.back_up_utility(&state, &features, a, self.last_reward);
         }
         // Memories and models join the graph; the last action's models learn what followed it.
         self.rebuild_memory_factors();
         if let Some((a, before)) = self.last.as_ref().and_then(|l| Some((l.action?, l.wm.clone()))) {
             self.learn_action_models(a, &before);
+            self.record_experience(a, &before);
         }
         self.learn_perception_models();
         // Appraise what changed since the last cycle, before elaborating on it.
@@ -803,6 +815,7 @@ impl SigmaEngine {
             goals: self.goal_stack.clone(),
             impasse: decision_impasse.as_ref().map(|d| (d.kind, d.cycles)),
             state: self.state_key(),
+            features: self.q_features(),
         });
 
         let mut active = self.reachable(root).0;
@@ -1373,6 +1386,8 @@ mod tests_continuous_args;
 mod tests_decision;
 #[cfg(test)]
 mod tests_exact;
+#[cfg(test)]
+mod tests_generalize;
 #[cfg(test)]
 mod tests_graph_memory;
 #[cfg(test)]
