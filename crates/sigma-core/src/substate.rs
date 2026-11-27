@@ -16,7 +16,10 @@
 //! is deleted.
 
 use crate::graph_memory::{next_name, transition_name, Q_WEIGHT, REWARD_WEIGHT};
-use crate::{ImpasseKind, PatternKind, PredicateRole, SigmaEngine, SUBGOAL_PROMOTION, TIE_MARGIN};
+use crate::{
+    ImpasseKind, NodeIdentity, PatternKind, PredicateRole, PredicateSchema, SigmaEngine, SkillPackage, MAX_TABLE_LEN,
+    SUBGOAL_PROMOTION, TIE_MARGIN,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -30,6 +33,12 @@ pub const DISCOUNT: f32 = 0.9;
 const SIMULATION_BUDGET: usize = 256;
 /// A factor message this sure an action should (or should not) be taken counts as a vote.
 const CONFLICT_SURE: f32 = 0.8;
+/// Most context conditions a chunk tests.
+pub const MAX_CHUNK_CONDITIONS: usize = 6;
+/// Weight a chunk gives its action in the situation it was learned in (as a demonstration).
+pub const CHUNK_WEIGHT: f32 = 10.0;
+/// Skill names of chunks start with this.
+pub const CHUNK_PREFIX: &str = "chunk:";
 
 /// One level of the state stack below the top state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -419,6 +428,78 @@ impl SigmaEngine {
             _ => next.imagine(tied[0], goal, &tied, horizon - 1, depth, &path, search),
         };
         now.max(DISCOUNT * confidence * tail)
+    }
+
+    /// Chunking, as in Sigma: compiles what a substate concluded into a rule, so the same
+    /// situation is decided at once next time, without an impasse. The rule is a table skill
+    /// over the (sub)goal the impasse arose for, the context working memory holds that the
+    /// decision depended on (observed context predicates linked to that goal, to the root goal
+    /// or to the action, at most [`MAX_CHUNK_CONDITIONS`]), and the action. Its one strong
+    /// entry is that situation with the action taken. Returned unsigned.
+    pub fn chunk(&self, top: usize, action: usize) -> Option<SkillPackage> {
+        let root = self.index.get(self.goal_stack.first()?).copied()?;
+        let mut conditions: Vec<usize> = Vec::new();
+        for start in [top, root, action] {
+            for v in self.reachable(start).1 {
+                let n = &self.vars[v];
+                if n.schema.role == PredicateRole::Context
+                    && n.evidence.is_some()
+                    && n.range.is_none()
+                    && !crate::graph_memory::internal(&n.schema.name)
+                    && !conditions.contains(&v)
+                {
+                    conditions.push(v);
+                }
+            }
+        }
+        conditions.sort_by(|&a, &b| self.vars[a].schema.name.cmp(&self.vars[b].schema.name));
+        conditions.truncate(MAX_CHUNK_CONDITIONS);
+        let slots: Vec<usize> = [top].into_iter().chain(conditions.iter().copied()).chain([action]).collect();
+        let predicates: Vec<PredicateSchema> = slots.iter().map(|&v| self.vars[v].schema.clone()).collect();
+        let factor_shape: Vec<usize> = predicates.iter().map(|p| p.domain_size).collect();
+        let len = factor_shape.iter().try_fold(1usize, |a, &d| a.checked_mul(d)).filter(|&n| n <= MAX_TABLE_LEN)?;
+        // A goal is decided on as desired, an open subgoal as not yet holding.
+        let goal_value = usize::from(self.vars[top].schema.role == PredicateRole::Goal);
+        let values: Vec<usize> = [goal_value]
+            .into_iter()
+            .chain(conditions.iter().map(|&v| self.vars[v].evidence.expect("observed")))
+            .chain([1])
+            .collect();
+        let mut factor_values = vec![1.0; len];
+        let flat = values.iter().zip(&factor_shape).fold(0, |acc, (x, d)| acc * d + x);
+        factor_values[flat] = CHUNK_WEIGHT;
+        let situation: Vec<String> =
+            slots.iter().zip(&values).map(|(&v, x)| format!("{}={x}", self.vars[v].schema.name)).collect();
+        let tag = blake3::hash(situation.join(",").as_bytes()).to_hex();
+        Some(SkillPackage {
+            skill_name: format!(
+                "{CHUNK_PREFIX}{}->{}#{}",
+                self.vars[top].schema.name,
+                self.vars[action].schema.name,
+                &tag[..12]
+            ),
+            version: 1,
+            author_pubkey: [0; 32],
+            signature: Vec::new(),
+            predicates,
+            factor_shape,
+            factor_values,
+        })
+    }
+
+    /// Signs a chunk with `author` and compiles it as a skill.
+    pub fn learn_chunk(
+        &mut self,
+        author: &NodeIdentity,
+        mut chunk: SkillPackage,
+    ) -> Result<SkillPackage, &'static str> {
+        if !chunk.skill_name.starts_with(CHUNK_PREFIX) {
+            return Err("not a chunk");
+        }
+        chunk.version = self.export_skill(&chunk.skill_name).map_or(1, |s| s.version + 1);
+        author.sign_skill(&mut chunk);
+        self.compile_skill(chunk.clone())?;
+        Ok(chunk)
     }
 
     /// Actions whose learned model predicts that they bring about an open (sub)goal.

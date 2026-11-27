@@ -189,6 +189,8 @@ pub fn init_agent(storage_dir: String, swarm_passphrase: String, bootstrap_peers
     let store = Arc::new(FactorStore::open(std::path::Path::new(&storage_dir).join("sigma_memory.redb")).map_err(err)?);
     let identity = store.load_or_create_identity().map_err(err)?;
     let mut engine = SigmaEngine::new();
+    // Chunking: what reasoning in a substate concludes becomes a rule signed by this node.
+    engine.chunk_author = Some(identity.clone());
     let restored = store.restore_engine(&mut engine).map_err(err)?;
     engine.goal_stack = store.load_goal_stack().map_err(err)?;
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
@@ -253,6 +255,11 @@ pub fn run_cognitive_step(evidence: Vec<Evidence>, active_goals: Vec<String>) ->
             engine.push_goal(goal.trim());
         }
         let out = engine.cognitive_cycle();
+        // A learned chunk is kept and follows the user to their paired devices (it describes
+        // the user's own situations, so it is not offered to the swarm).
+        if let Some(chunk) = &out.chunk {
+            a.store.save_skill(chunk).map_err(err)?;
+        }
         // Persisted every step so paired devices see the latest memories and goals.
         a.store.save_memories(&engine).map_err(err)?;
         a.store.save_goal_stack(&engine.goal_stack).map_err(err)?;
