@@ -21,6 +21,11 @@
 //! jointly and exactly in O(n³·T³). It takes sentences of up to [`MAX_PARSE_WORDS`] words.
 //! [`Grammar::log_score`] scores any parse under the model, so the two can be compared.
 //!
+//! [`Grammar::parse_nonprojective`] also allows crossing arcs: it keeps the chart parse's
+//! tags and finds the best tree over all trees with one root, projective or not, by the
+//! Chu–Liu/Edmonds maximum spanning arborescence (tried for each root word). Projective trees
+//! are among those trees, so it never scores below the chart parse.
+//!
 //! A [`Grammar`] holds the counts behind the factors and learns from parses it is shown
 //! ([`Grammar::learn`]).
 //!
@@ -303,6 +308,29 @@ impl Grammar {
             return None;
         }
         Some(Chart::new(self, words).decode())
+    }
+
+    /// The best parse over every tree with one root, crossing arcs allowed, for the tags of
+    /// the exact projective parse: the maximum spanning arborescence of the arc scores
+    /// (Chu–Liu/Edmonds) under each choice of root word, the best kept.
+    pub fn parse_nonprojective(&self, words: &[String]) -> Option<Parse> {
+        let projective = self.parse(words)?;
+        let n = words.len();
+        let tags = projective.tags.clone();
+        let mut scores = vec![vec![f64::NEG_INFINITY; n]; n];
+        for (h, row) in scores.iter_mut().enumerate() {
+            for (d, cell) in row.iter_mut().enumerate().filter(|&(d, _)| d != h) {
+                let length = (h as f64 - d as f64).abs() - 1.0;
+                *cell = f64::from(self.attachment(tags[d], tags[h], h > d).ln()) - f64::from(DISTANCE) * length;
+            }
+        }
+        let roots: Vec<f64> = tags.iter().map(|&t| f64::from(self.attachment(t, ROOT, false).ln())).collect();
+        let (heads, _) = max_spanning_tree(&scores, &roots)?;
+        let candidate = Parse { words: words.to_vec(), tags, heads };
+        match (self.log_score(&candidate), self.log_score(&projective)) {
+            (Some(a), Some(b)) if a > b => Some(candidate),
+            _ => Some(projective),
+        }
     }
 
     /// Builds the sentence's factor graph and decodes it by the engine's loopy max-product
@@ -630,6 +658,105 @@ impl<'a> Chart<'a> {
         self.complete_span(i, r, 1, ti, tr, tags, heads);
         self.complete_span(r + 1, j, 0, tr1, tj, tags, heads);
     }
+}
+
+/// The maximum spanning arborescence with one root: `scores[h][d]` is the score of the arc
+/// `h -> d` (`-inf` for none) and `root[d]` that of `d` being the root. Every word is tried
+/// as the root, and Chu–Liu/Edmonds finds the best tree under it. Returns each word's head
+/// (`None` for the root) and the total score, or `None` without any tree.
+pub fn max_spanning_tree(scores: &[Vec<f64>], root: &[f64]) -> Option<(Vec<Option<usize>>, f64)> {
+    let n = root.len();
+    if n == 0 || scores.len() != n || scores.iter().any(|r| r.len() != n) {
+        return None;
+    }
+    let mut best: Option<(Vec<Option<usize>>, f64)> = None;
+    for (r, &at_root) in root.iter().enumerate() {
+        if !at_root.is_finite() {
+            continue;
+        }
+        let Some(parent) = edmonds(scores, r) else { continue };
+        let total = at_root + (0..n).filter(|&d| d != r).map(|d| scores[parent[d]][d]).sum::<f64>();
+        if total.is_finite() && best.as_ref().is_none_or(|b| total > b.1) {
+            let heads = (0..n).map(|d| (d != r).then_some(parent[d])).collect();
+            best = Some((heads, total));
+        }
+    }
+    best
+}
+
+/// Chu–Liu/Edmonds: the best arborescence rooted at `root` over a dense score matrix
+/// (`scores[h][d]`). Returns every node's parent (the root's is itself).
+fn edmonds(scores: &[Vec<f64>], root: usize) -> Option<Vec<usize>> {
+    let n = scores.len();
+    // Each node's best incoming arc.
+    let mut parent = vec![root; n];
+    for d in (0..n).filter(|&d| d != root) {
+        let (h, s) = (0..n).filter(|&h| h != d).map(|h| (h, scores[h][d])).max_by(|a, b| a.1.total_cmp(&b.1))?;
+        if !s.is_finite() {
+            return None;
+        }
+        parent[d] = h;
+    }
+    // A cycle among those arcs, if any.
+    let mut color = vec![0u8; n]; // 0 unvisited, 1 on the current path, 2 done
+    let mut cycle: Option<Vec<usize>> = None;
+    'search: for start in 0..n {
+        let mut path = Vec::new();
+        let mut v = start;
+        while color[v] == 0 && v != root {
+            color[v] = 1;
+            path.push(v);
+            v = parent[v];
+        }
+        if color[v] == 1 {
+            let at = path.iter().position(|&u| u == v).expect("on the path");
+            cycle = Some(path[at..].to_vec());
+            break 'search;
+        }
+        for u in path {
+            color[u] = 2;
+        }
+    }
+    let Some(cycle) = cycle else { return Some(parent) };
+    // Contract the cycle into one node `c` and solve the smaller problem.
+    let in_cycle: Vec<bool> = (0..n).map(|v| cycle.contains(&v)).collect();
+    let outside: Vec<usize> = (0..n).filter(|&v| !in_cycle[v]).collect();
+    let m = outside.len() + 1;
+    let c = m - 1;
+    let index = |v: usize| outside.iter().position(|&u| u == v);
+    let mut small = vec![vec![f64::NEG_INFINITY; m]; m];
+    // Where an arc into the cycle enters it, and where an arc out of it leaves.
+    let mut enters = vec![0usize; m];
+    let mut leaves = vec![0usize; m];
+    for (i, &u) in outside.iter().enumerate() {
+        for (j, &v) in outside.iter().enumerate() {
+            small[i][j] = scores[u][v];
+        }
+        // u -> cycle: entering at v' replaces v's cycle arc.
+        let (v, s) = cycle
+            .iter()
+            .map(|&v| (v, scores[u][v] - scores[parent[v]][v]))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .expect("a cycle has nodes");
+        small[i][c] = s;
+        enters[i] = v;
+        // cycle -> u: from the cycle node with the best arc to u.
+        let (w, s) = cycle.iter().map(|&w| (w, scores[w][u])).max_by(|a, b| a.1.total_cmp(&b.1)).expect("nodes");
+        small[c][i] = s;
+        leaves[i] = w;
+    }
+    let sub = edmonds(&small, index(root)?)?;
+    let mut out = parent.clone();
+    for (i, &u) in outside.iter().enumerate() {
+        if u == root {
+            continue;
+        }
+        out[u] = if sub[i] == c { leaves[i] } else { outside[sub[i]] };
+    }
+    // The arc into the cycle breaks it where it enters; the rest keep their cycle arcs.
+    let from = sub[c];
+    out[enters[from]] = outside[from];
+    Some(out)
 }
 
 /// The tag index of a tag name.
