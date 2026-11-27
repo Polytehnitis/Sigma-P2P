@@ -406,3 +406,48 @@ fn the_live_viewer_polls_for_snapshots() {
     let page = snap.to_live_html("</script><script>alert(1)</script>", 100);
     assert!(!page.contains("</script><script>alert"));
 }
+
+#[test]
+fn parallel_message_passing_matches_one_thread() {
+    // 40 variables of 16 values, a random tree plus loops: enough work to spread.
+    let id = NodeIdentity::generate();
+    let mut rng = Lcg(77);
+    let mut engine = SigmaEngine::new();
+    let schema = |v: usize| PredicateSchema { name: format!("W{v}"), domain_size: 16, role: Context };
+    for v in 0..40 {
+        engine.register_predicate(&schema(v)).unwrap();
+    }
+    let mut pairs: Vec<(usize, usize)> = (1..40).map(|v| (rng.below(v), v)).collect();
+    pairs.extend((0..40).map(|_| {
+        let a = rng.below(40);
+        (a, (a + 1 + rng.below(39)) % 40)
+    }));
+    for (i, (a, b)) in pairs.into_iter().enumerate() {
+        let table: Vec<f32> = (0..256).map(|_| rng.weight()).collect();
+        let mut skill = SkillPackage {
+            skill_name: format!("p{i}"),
+            version: 1,
+            author_pubkey: [0; 32],
+            signature: vec![],
+            factor_shape: vec![16, 16],
+            predicates: vec![schema(a), schema(b)],
+            factor_values: table,
+        };
+        id.sign_skill(&mut skill);
+        engine.compile_skill(skill).unwrap();
+    }
+    engine.set_evidence("W3", 5).unwrap();
+    assert!(engine.worker_threads(1 << 20) >= 1);
+    for inference in [Inference::SumProduct, Inference::MaxProduct, Inference::VariationalMessagePassing] {
+        engine.inference = inference;
+        engine.threads = 1;
+        let beliefs =
+            |e: &SigmaEngine| -> Vec<Vec<f32>> { e.graph_snapshot().variables.into_iter().map(|v| v.belief).collect() };
+        let one = beliefs(&engine);
+        engine.threads = 4;
+        let four = beliefs(&engine);
+        assert_eq!(one, four, "{inference:?}: the same beliefs, bit for bit");
+    }
+    // Small graphs stay on the calling thread.
+    assert_eq!(demo_engine().worker_threads(100), 1);
+}

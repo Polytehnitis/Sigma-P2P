@@ -391,6 +391,11 @@ pub struct SigmaEngine {
     multi: HashMap<usize, Vec<usize>>,
     /// Sum-product (marginals) or max-product (MAP) message passing.
     pub inference: Inference,
+    /// Threads that compute factor messages in parallel within a sweep: 0 (the default) uses
+    /// the machine's cores, up to 8; 1 stays on the calling thread. Small graphs always stay on
+    /// one thread. Results are the same either way: each factor's messages depend only on the
+    /// previous sweep.
+    pub threads: usize,
     /// Soft evidence on the appraisal predicates from the last cycle's appraisal.
     appraisal_priors: HashMap<usize, Vec<f32>>,
     /// Predicates (by name) whose working memory action patterns replace each cycle.
@@ -1409,93 +1414,84 @@ impl SigmaEngine {
         let maximize = self.inference == Inference::MaxProduct;
         let variational = self.inference == Inference::VariationalMessagePassing;
         let ep = self.inference == Inference::ExpectationPropagation;
+        let work: usize = tables.iter().zip(&self.factors).map(|(t, f)| t.len() * f.vars.len()).sum();
+        let threads = self.worker_threads(work);
         for _ in 0..BP_ITERS {
-            let next: Vec<Vec<Vec<f32>>> = self
-                .factors
-                .iter()
-                .enumerate()
-                .map(|(fi, f)| {
-                    if self.attended.as_ref().is_some_and(|mask| !mask[fi]) {
-                        return f.vars.iter().map(|&v| uniform(v)).collect();
-                    }
-                    let inbound: Vec<Vec<f32>> = f
-                        .vars
-                        .iter()
-                        .enumerate()
-                        .map(|(s, &v)| match f.kinds[s] {
-                            PatternKind::Action => uniform(v),
-                            // Mean field: the other variables' whole beliefs, not cavities.
-                            _ if variational => self.belief(v, fixed, &msgs, None),
-                            _ => self.belief(v, fixed, &msgs, Some((fi, s))),
-                        })
-                        .collect();
-                    (0..f.vars.len())
-                        .map(|s| {
-                            if f.kinds[s] == PatternKind::Condition {
-                                return uniform(f.vars[s]);
-                            }
-                            if variational {
-                                // exp(E_q[log f]) over the other slots.
-                                let mut out = vec![0.0f32; inbound[s].len()];
-                                for (idx, &w) in tables[fi].indexed_iter() {
-                                    let q = (0..inbound.len())
-                                        .filter(|&j| j != s)
-                                        .fold(1.0, |acc, j| acc * inbound[j][idx[j]]);
-                                    out[idx[s]] += q * w.max(1e-30).ln();
-                                }
-                                let top = out.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                                return normalize(out.into_iter().map(|l| (l - top).exp()).collect());
-                            }
-                            if ep && self.vars[f.vars[s]].range.is_some() {
-                                let mut out = vec![0.0; inbound[s].len()];
-                                for (idx, &w) in tables[fi].indexed_iter() {
-                                    out[idx[s]] += (0..inbound.len())
-                                        .filter(|&j| j != s)
-                                        .fold(w, |acc, j| acc * inbound[j][idx[j]]);
-                                }
-                                return self.ep_project(f.vars[s], &inbound[s], normalize(out));
-                            }
-                            if maximize {
-                                // Max-product: every other slot is maximized over.
-                                let mut out = vec![0.0f32; inbound[s].len()];
-                                for (idx, &w) in tables[fi].indexed_iter() {
-                                    let p = (0..inbound.len())
-                                        .filter(|&j| j != s)
-                                        .fold(w, |acc, j| acc * inbound[j][idx[j]]);
-                                    out[idx[s]] = out[idx[s]].max(p);
-                                }
-                                return normalize(out);
-                            }
-                            if !universal[fi].iter().enumerate().any(|(j, &u)| u && j != s) {
-                                let mut out = vec![0.0; inbound[s].len()];
-                                for (idx, &w) in tables[fi].indexed_iter() {
-                                    out[idx[s]] += (0..inbound.len())
-                                        .filter(|&j| j != s)
-                                        .fold(w, |acc, j| acc * inbound[j][idx[j]]);
-                                }
-                                return normalize(out);
-                            }
-                            // Multi-valued slots are maximized over, the others summed (within
-                            // each assignment of the multi-valued ones).
-                            let mut groups: HashMap<(usize, Vec<usize>), f32> = HashMap::new();
+            let next: Vec<Vec<Vec<f32>>> = par_map(self.factors.len(), threads, |fi| {
+                let f = &self.factors[fi];
+                if self.attended.as_ref().is_some_and(|mask| !mask[fi]) {
+                    return f.vars.iter().map(|&v| uniform(v)).collect();
+                }
+                let inbound: Vec<Vec<f32>> = f
+                    .vars
+                    .iter()
+                    .enumerate()
+                    .map(|(s, &v)| match f.kinds[s] {
+                        PatternKind::Action => uniform(v),
+                        // Mean field: the other variables' whole beliefs, not cavities.
+                        _ if variational => self.belief(v, fixed, &msgs, None),
+                        _ => self.belief(v, fixed, &msgs, Some((fi, s))),
+                    })
+                    .collect();
+                (0..f.vars.len())
+                    .map(|s| {
+                        if f.kinds[s] == PatternKind::Condition {
+                            return uniform(f.vars[s]);
+                        }
+                        if variational {
+                            // exp(E_q[log f]) over the other slots.
+                            let mut out = vec![0.0f32; inbound[s].len()];
                             for (idx, &w) in tables[fi].indexed_iter() {
-                                let key: Vec<usize> = (0..inbound.len())
-                                    .filter(|&j| j != s && universal[fi][j])
-                                    .map(|j| idx[j])
-                                    .collect();
+                                let q =
+                                    (0..inbound.len()).filter(|&j| j != s).fold(1.0, |acc, j| acc * inbound[j][idx[j]]);
+                                out[idx[s]] += q * w.max(1e-30).ln();
+                            }
+                            let top = out.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                            return normalize(out.into_iter().map(|l| (l - top).exp()).collect());
+                        }
+                        if ep && self.vars[f.vars[s]].range.is_some() {
+                            let mut out = vec![0.0; inbound[s].len()];
+                            for (idx, &w) in tables[fi].indexed_iter() {
+                                out[idx[s]] +=
+                                    (0..inbound.len()).filter(|&j| j != s).fold(w, |acc, j| acc * inbound[j][idx[j]]);
+                            }
+                            return self.ep_project(f.vars[s], &inbound[s], normalize(out));
+                        }
+                        if maximize {
+                            // Max-product: every other slot is maximized over.
+                            let mut out = vec![0.0f32; inbound[s].len()];
+                            for (idx, &w) in tables[fi].indexed_iter() {
                                 let p =
                                     (0..inbound.len()).filter(|&j| j != s).fold(w, |acc, j| acc * inbound[j][idx[j]]);
-                                *groups.entry((idx[s], key)).or_default() += p;
+                                out[idx[s]] = out[idx[s]].max(p);
                             }
-                            let mut out = vec![0.0f32; inbound[s].len()];
-                            for ((x, _), p) in groups {
-                                out[x] = out[x].max(p);
+                            return normalize(out);
+                        }
+                        if !universal[fi].iter().enumerate().any(|(j, &u)| u && j != s) {
+                            let mut out = vec![0.0; inbound[s].len()];
+                            for (idx, &w) in tables[fi].indexed_iter() {
+                                out[idx[s]] +=
+                                    (0..inbound.len()).filter(|&j| j != s).fold(w, |acc, j| acc * inbound[j][idx[j]]);
                             }
-                            normalize(out)
-                        })
-                        .collect()
-                })
-                .collect();
+                            return normalize(out);
+                        }
+                        // Multi-valued slots are maximized over, the others summed (within
+                        // each assignment of the multi-valued ones).
+                        let mut groups: HashMap<(usize, Vec<usize>), f32> = HashMap::new();
+                        for (idx, &w) in tables[fi].indexed_iter() {
+                            let key: Vec<usize> =
+                                (0..inbound.len()).filter(|&j| j != s && universal[fi][j]).map(|j| idx[j]).collect();
+                            let p = (0..inbound.len()).filter(|&j| j != s).fold(w, |acc, j| acc * inbound[j][idx[j]]);
+                            *groups.entry((idx[s], key)).or_default() += p;
+                        }
+                        let mut out = vec![0.0f32; inbound[s].len()];
+                        for ((x, _), p) in groups {
+                            out[x] = out[x].max(p);
+                        }
+                        normalize(out)
+                    })
+                    .collect()
+            });
             let delta = next
                 .iter()
                 .flatten()
@@ -1604,6 +1600,41 @@ fn same_evidence(a: &[Option<usize>], b: &[Option<usize>]) -> bool {
 
 fn one_hot(x: usize, d: usize) -> Vec<f32> {
     (0..d).map(|i| if i == x { 1.0 } else { 0.0 }).collect()
+}
+
+/// Work per sweep (table entries times slots) below which message passing stays on one thread.
+const PARALLEL_WORK: usize = 1 << 15;
+/// Most threads used for message passing by default.
+const MAX_THREADS: usize = 8;
+
+impl SigmaEngine {
+    /// Threads for a sweep of `work` (see [`SigmaEngine::threads`]).
+    pub(crate) fn worker_threads(&self, work: usize) -> usize {
+        if work < PARALLEL_WORK {
+            return 1;
+        }
+        match self.threads {
+            0 => std::thread::available_parallelism().map_or(1, |n| n.get()).min(MAX_THREADS),
+            t => t,
+        }
+    }
+}
+
+/// `(0..n).map(f)` on up to `threads` scoped threads, each taking a contiguous block; the
+/// results are in order, exactly as on one thread.
+pub(crate) fn par_map<T: Send>(n: usize, threads: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    if threads <= 1 || n < 2 {
+        return (0..n).map(f).collect();
+    }
+    let chunk = n.div_ceil(threads.min(n));
+    std::thread::scope(|scope| {
+        let f = &f;
+        let workers: Vec<_> = (0..n)
+            .step_by(chunk)
+            .map(|start| scope.spawn(move || (start..(start + chunk).min(n)).map(f).collect::<Vec<T>>()))
+            .collect();
+        workers.into_iter().flat_map(|w| w.join().expect("a message worker panicked")).collect()
+    })
 }
 
 pub(crate) fn normalize(mut v: Vec<f32>) -> Vec<f32> {
