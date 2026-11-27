@@ -39,8 +39,8 @@ pub use memory::{Episode, EpisodicMemory, SemanticMemory, SemanticRecall};
 pub use mind::{Appraisal, Emotion, MindModel, OtherAgent};
 pub use plm::Plm;
 pub use program::{
-    Conditional, Function, Pattern, PatternKind, Piece, PredicateDef, Program, Skill, SkillBody, Term, TypeDef,
-    TypeKind, ValueMap,
+    Conditional, Extensions, Function, Pattern, PatternKind, Piece, PredicateDef, PredicateOptions, Program, Skill,
+    SkillBody, Term, TypeDef, TypeKind, ValueMap,
 };
 pub use storage::FactorStore;
 pub use substate::Substate;
@@ -338,6 +338,10 @@ pub struct SigmaEngine {
     decisions: u64,
     /// Preferences over operators (see [`decision`]).
     pub preferences: Vec<Preference>,
+    /// Predicate options, by predicate name (see [`PredicateOptions`]).
+    options: HashMap<String, PredicateOptions>,
+    /// Evidence of multi-valued predicates: the set of values that hold.
+    multi: HashMap<usize, Vec<usize>>,
 }
 
 impl SigmaEngine {
@@ -394,7 +398,15 @@ impl SigmaEngine {
         if self.skill(&skill.skill_name).is_some_and(|old| old.version > skill.version) {
             return Err("stale skill version");
         }
+        for (name, o) in &grounding.options {
+            if self.options.get(name).is_some_and(|old| old != o) {
+                return Err("predicate option conflict");
+            }
+        }
         self.remove_skill(&skill.skill_name);
+        for (name, o) in &grounding.options {
+            self.options.insert(name.clone(), *o);
+        }
         for p in &grounding.atoms {
             self.register_predicate(p)?;
         }
@@ -472,6 +484,7 @@ impl SigmaEngine {
         }
         self.vars[v].evidence = Some(value);
         self.exact.remove(&v);
+        self.multi.remove(&v);
         Ok(())
     }
 
@@ -479,6 +492,59 @@ impl SigmaEngine {
         if let Some(&v) = self.index.get(name) {
             self.vars[v].evidence = None;
             self.exact.remove(&v);
+            self.multi.remove(&v);
+        }
+    }
+
+    /// Sets the options of predicate `name` (a predicate name, applying to all its ground
+    /// atoms), as a v3 skill's extensions do.
+    pub fn set_predicate_options(&mut self, name: &str, options: PredicateOptions) -> Result<(), &'static str> {
+        let continuous = self.vars.iter().any(|n| atom_base(&n.schema.name) == name && n.range.is_some());
+        if continuous && (options.closed_world || !options.unique) {
+            return Err("a continuous predicate is open world and unique");
+        }
+        self.options.insert(name.to_string(), options);
+        Ok(())
+    }
+
+    /// The options of the predicate behind atom `name` (the defaults when none were set).
+    pub fn predicate_options(&self, name: &str) -> PredicateOptions {
+        if self.options.is_empty() {
+            return PredicateOptions::default();
+        }
+        self.options.get(atom_base(name)).copied().unwrap_or_default()
+    }
+
+    fn options_of(&self, v: usize) -> PredicateOptions {
+        self.predicate_options(&self.vars[v].schema.name)
+    }
+
+    /// Evidence for a multi-valued predicate: every value in `values` holds (and no other).
+    pub fn set_evidence_values(&mut self, name: &str, values: &[usize]) -> Result<(), &'static str> {
+        let v = *self.index.get(name).ok_or("unknown predicate")?;
+        if self.options_of(v).unique {
+            return Err("predicate is unique: use set_evidence");
+        }
+        if values.is_empty() || values.iter().any(|&x| x >= self.vars[v].schema.domain_size) {
+            return Err("value outside predicate domain");
+        }
+        let mut set = values.to_vec();
+        set.sort_unstable();
+        set.dedup();
+        self.vars[v].evidence = None;
+        self.exact.remove(&v);
+        self.multi.insert(v, set);
+        Ok(())
+    }
+
+    /// Ends one cycle's hold on non-persistent evidence.
+    fn forget_transient(&mut self) {
+        for v in 0..self.vars.len() {
+            if !self.options_of(v).persistent {
+                self.vars[v].evidence = None;
+                self.exact.remove(&v);
+                self.multi.remove(&v);
+            }
         }
     }
 
@@ -605,10 +671,13 @@ impl SigmaEngine {
         let mut wm: Vec<(String, usize)> =
             self.vars.iter().filter_map(|n| n.evidence.map(|x| (n.schema.name.clone(), x))).collect();
         for (&v, p) in &self.percepts {
-            if self.vars[v].evidence.is_none() {
+            if self.vars[v].evidence.is_none() && !self.multi.contains_key(&v) {
                 let x = p.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map_or(0, |m| m.0);
                 wm.push((self.vars[v].schema.name.clone(), x));
             }
+        }
+        for (&v, set) in &self.multi {
+            wm.extend(set.iter().map(|&x| (self.vars[v].schema.name.clone(), x)));
         }
         wm.sort();
         wm
@@ -664,6 +733,7 @@ impl SigmaEngine {
             self.substates.clear();
             self.percepts.clear();
             self.particle_percepts.clear();
+            self.forget_transient();
             self.appraisal = appraisal.label(false);
             return CycleOutcome { appraisal: self.appraisal.clone(), ..CycleOutcome::default() };
         };
@@ -772,6 +842,7 @@ impl SigmaEngine {
         }
         self.percepts.clear();
         self.particle_percepts.clear();
+        self.forget_transient();
         outcome
     }
 
@@ -1016,6 +1087,16 @@ impl SigmaEngine {
     /// evidence. A `Condition` slot never receives messages from its factor, and an `Action`
     /// slot never sends any into it.
     fn infer(&self, clamp: impl Fn(usize) -> Option<usize>) -> Vec<Vec<f32>> {
+        let mut beliefs = self.infer_raw(clamp);
+        if !self.options.is_empty() {
+            for (v, b) in beliefs.iter_mut().enumerate() {
+                *b = self.shape_belief(v, std::mem::take(b));
+            }
+        }
+        beliefs
+    }
+
+    fn infer_raw(&self, clamp: impl Fn(usize) -> Option<usize>) -> Vec<Vec<f32>> {
         if let Some(n) = self.particle_count {
             if let Some((beliefs, _)) = self.infer_particles(&clamp, n) {
                 return beliefs;
@@ -1026,6 +1107,24 @@ impl SigmaEngine {
         }
         let (prior, msgs) = self.propagate(clamp);
         (0..self.vars.len()).map(|v| self.belief(v, &prior, &msgs, None)).collect()
+    }
+
+    /// A predicate's options applied to its belief (a distribution): exponential, then
+    /// normalized to sum 1 or, for a multi-valued or unnormalized predicate, scaled so the
+    /// largest value is 1.
+    fn shape_belief(&self, v: usize, mut b: Vec<f32>) -> Vec<f32> {
+        let o = self.options_of(v);
+        if o.exponential {
+            b.iter_mut().for_each(|x| *x = x.exp());
+        }
+        if o.normalize && o.unique {
+            return normalize(b);
+        }
+        let max = b.iter().copied().fold(0.0f32, f32::max);
+        if max > 0.0 && max.is_finite() {
+            b.iter_mut().for_each(|x| *x /= max);
+        }
+        b
     }
 
     /// Runs message passing; returns each variable's prior and the final factor-to-variable messages.
@@ -1044,10 +1143,27 @@ impl SigmaEngine {
                 let d = self.vars[v].schema.domain_size;
                 match self.vars[v].evidence.or_else(|| clamp(v)) {
                     Some(x) => one_hot(x, d),
-                    None => self.percepts.get(&v).cloned().unwrap_or_else(|| vec![1.0; d]),
+                    None => self.open_prior(v),
                 }
             })
             .collect()
+    }
+
+    /// What working memory says of `v` without evidence or a clamp: the set of values of a
+    /// multi-valued predicate, a percept, the default value of a closed-world predicate, or
+    /// nothing (uniform).
+    pub(crate) fn open_prior(&self, v: usize) -> Vec<f32> {
+        let d = self.vars[v].schema.domain_size;
+        if let Some(set) = self.multi.get(&v) {
+            return (0..d).map(|x| if set.contains(&x) { 1.0 } else { 0.0 }).collect();
+        }
+        if let Some(p) = self.percepts.get(&v) {
+            return p.clone();
+        }
+        if self.vars[v].range.is_none() && self.options_of(v).closed_world {
+            return one_hot(0, d);
+        }
+        vec![1.0; d]
     }
 
     /// Loopy sum-product over `tables` (one per factor, indexed like `prior`'s domains).
@@ -1056,6 +1172,9 @@ impl SigmaEngine {
         let uniform = |v: usize| normalize(vec![1.0; prior[v].len()]);
         let mut msgs: Vec<Vec<Vec<f32>>> =
             self.factors.iter().map(|f| f.vars.iter().map(|&v| uniform(v)).collect()).collect();
+        // Slots over multi-valued predicates, which are maximized over (Sigma's universal).
+        let universal: Vec<Vec<bool>> =
+            self.factors.iter().map(|f| f.vars.iter().map(|&v| !self.options_of(v).unique).collect()).collect();
         for _ in 0..BP_ITERS {
             let next: Vec<Vec<Vec<f32>>> = self
                 .factors
@@ -1079,10 +1198,30 @@ impl SigmaEngine {
                             if f.kinds[s] == PatternKind::Condition {
                                 return uniform(f.vars[s]);
                             }
-                            let mut out = vec![0.0; inbound[s].len()];
+                            if !universal[fi].iter().enumerate().any(|(j, &u)| u && j != s) {
+                                let mut out = vec![0.0; inbound[s].len()];
+                                for (idx, &w) in tables[fi].indexed_iter() {
+                                    out[idx[s]] += (0..inbound.len())
+                                        .filter(|&j| j != s)
+                                        .fold(w, |acc, j| acc * inbound[j][idx[j]]);
+                                }
+                                return normalize(out);
+                            }
+                            // Multi-valued slots are maximized over, the others summed (within
+                            // each assignment of the multi-valued ones).
+                            let mut groups: HashMap<(usize, Vec<usize>), f32> = HashMap::new();
                             for (idx, &w) in tables[fi].indexed_iter() {
-                                out[idx[s]] +=
+                                let key: Vec<usize> = (0..inbound.len())
+                                    .filter(|&j| j != s && universal[fi][j])
+                                    .map(|j| idx[j])
+                                    .collect();
+                                let p =
                                     (0..inbound.len()).filter(|&j| j != s).fold(w, |acc, j| acc * inbound[j][idx[j]]);
+                                *groups.entry((idx[s], key)).or_default() += p;
+                            }
+                            let mut out = vec![0.0f32; inbound[s].len()];
+                            for ((x, _), p) in groups {
+                                out[x] = out[x].max(p);
                             }
                             normalize(out)
                         })
@@ -1157,6 +1296,11 @@ pub(crate) fn gradient_step(f: &mut FactorNode, inbound: &[Vec<f32>], rate: f32)
     Some(z)
 }
 
+/// The predicate an atom name (`Pred` or `Pred(a,b)`) is a ground instance of.
+pub(crate) fn atom_base(atom: &str) -> &str {
+    atom.split('(').next().unwrap_or(atom)
+}
+
 /// Whether two evidence snapshots agree (variables registered since count as unobserved).
 fn same_evidence(a: &[Option<usize>], b: &[Option<usize>]) -> bool {
     let n = a.len().max(b.len());
@@ -1204,6 +1348,8 @@ mod tests_memory;
 mod tests_mind;
 #[cfg(test)]
 mod tests_models;
+#[cfg(test)]
+mod tests_options;
 #[cfg(test)]
 mod tests_particles;
 #[cfg(test)]

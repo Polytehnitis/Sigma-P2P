@@ -80,7 +80,9 @@ pub fn skill_digest(s: &SkillPackage) -> blake3::Hash {
 }
 
 /// v1 bodies hash exactly as [`skill_digest`]. v2 bodies hash `(skill_name, version, program)`
-/// under the BLAKE3 key-derivation context `sigma-skill v2`, so the formats never collide.
+/// under the BLAKE3 key-derivation context `sigma-skill v2`, and v3 bodies
+/// `(skill_name, version, program, extensions)` under `sigma-skill v3`, so the formats never
+/// collide.
 pub fn any_skill_digest(s: &Skill) -> blake3::Hash {
     match &s.body {
         SkillBody::Table { predicates, factor_shape, factor_values } => {
@@ -91,6 +93,11 @@ pub fn any_skill_digest(s: &Skill) -> blake3::Hash {
             let body = (&s.skill_name, s.version, p);
             let bytes = postcard::to_allocvec(&body).expect("in-memory encoding cannot fail");
             blake3::Hasher::new_derive_key("sigma-skill v2").update(&bytes).finalize()
+        }
+        SkillBody::Extended(p, x) => {
+            let body = (&s.skill_name, s.version, p, x);
+            let bytes = postcard::to_allocvec(&body).expect("in-memory encoding cannot fail");
+            blake3::Hasher::new_derive_key("sigma-skill v3").update(&bytes).finalize()
         }
     }
 }

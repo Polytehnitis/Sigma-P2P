@@ -163,6 +163,12 @@ impl SigmaEngine {
             let values: Vec<f64> = dist.iter().zip(bounds.windows(2)).map(|(&p, w)| p as f64 / (w[1] - w[0])).collect();
             return Belief::Density(Plm::steps(bounds, &values).simplified().normalized());
         }
+        if self.vars[v].range.is_none() {
+            // A discrete predicate's working-memory default (closed world, a multi-valued set).
+            let dist = self.open_prior(v);
+            let values: Vec<f64> = dist.iter().zip(bounds.windows(2)).map(|(&p, w)| p as f64 / (w[1] - w[0])).collect();
+            return Belief::Density(Plm::steps(bounds, &values).simplified().normalized());
+        }
         Belief::Density(self.uniform(v))
     }
 
