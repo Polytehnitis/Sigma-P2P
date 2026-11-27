@@ -95,8 +95,8 @@ pub enum Inference {
 }
 
 impl Inference {
-    /// Whether this kind of inference runs only on the region grid (not on exact
-    /// piecewise-linear functions or particles).
+    /// Whether this kind of inference runs on the region grid or the exact piecewise-linear
+    /// path only (not on particles).
     pub fn grid_only(self) -> bool {
         matches!(self, Inference::VariationalMessagePassing | Inference::ExpectationPropagation)
     }
@@ -1288,11 +1288,7 @@ impl SigmaEngine {
     }
 
     fn infer_raw(&self, clamp: impl Fn(usize) -> Option<usize>) -> Vec<Vec<f32>> {
-        if self.inference.grid_only() {
-            let (prior, msgs) = self.propagate(clamp);
-            return (0..self.vars.len()).map(|v| self.belief(v, &prior, &msgs, None)).collect();
-        }
-        if let Some(n) = self.particle_count {
+        if let Some(n) = self.particle_count.filter(|_| !self.inference.grid_only()) {
             if let Some((beliefs, _)) = self.infer_particles(&clamp, n) {
                 return beliefs;
             }

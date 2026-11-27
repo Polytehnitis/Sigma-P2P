@@ -20,6 +20,39 @@ use crate::{PatternKind, SigmaEngine, BP_ITERS};
 
 /// Message changes (L1) below this end message passing.
 const TOLERANCE: f64 = 1e-5;
+/// Most quadrature points per message before VMP falls back to one node per slice.
+const MAX_VMP_NODES: usize = 4_000;
+/// Knots per slice of a continuous variable in a VMP message.
+const VMP_KNOTS: usize = 2;
+/// Pieces of an EP message's Gaussian.
+const EP_KNOTS: usize = 64;
+
+/// Quadrature nodes `(x, weight)` for the expectation over density `q`, over the slices of
+/// `q` and of `function_bounds` together: 3 Gauss–Legendre nodes per slice (or the midpoint
+/// when `gauss` is false), weighted by `q` there. The weights sum to 1.
+fn quadrature(function_bounds: &[f64], q: &Plm, gauss: bool) -> Vec<(f64, f64)> {
+    const NODES: [(f64, f64); 3] =
+        [(-0.774_596_669_241_483_4, 5.0 / 9.0), (0.0, 8.0 / 9.0), (0.774_596_669_241_483_4, 5.0 / 9.0)];
+    let bounds = merge_bounds(function_bounds, &q.bounds[0]);
+    let mut out = Vec::new();
+    for w in bounds.windows(2) {
+        let (c, h) = ((w[0] + w[1]) / 2.0, (w[1] - w[0]) / 2.0);
+        if gauss {
+            for (t, wt) in NODES {
+                let x = c + h * t;
+                out.push((x, wt * h * q.eval(&[x]).max(0.0)));
+            }
+        } else {
+            out.push((c, 2.0 * h * q.eval(&[c]).max(0.0)));
+        }
+    }
+    let z: f64 = out.iter().map(|p| p.1).sum();
+    if z > 0.0 {
+        out.iter_mut().for_each(|p| p.1 /= z);
+        out.retain(|p| p.1 > 0.0);
+    }
+    out
+}
 
 /// What a variable's prior or belief is: a density, or an exact point (continuous evidence).
 #[derive(Clone, Debug, PartialEq)]
@@ -74,7 +107,7 @@ impl SigmaEngine {
 
     /// Runs exact message passing to quiescence.
     pub(crate) fn exact_state(&self, clamp: &dyn Fn(usize) -> Option<usize>) -> Option<ExactState> {
-        if !self.uses_exact() || self.inference.grid_only() {
+        if !self.uses_exact() {
             return None;
         }
         let functions: Vec<Plm> = (0..self.factors.len()).map(|fi| self.factor_plm(fi)).collect::<Option<_>>()?;
@@ -85,6 +118,8 @@ impl SigmaEngine {
             prior,
         };
         let maximize = self.inference == crate::Inference::MaxProduct;
+        let variational = self.inference == crate::Inference::VariationalMessagePassing;
+        let ep = self.inference == crate::Inference::ExpectationPropagation;
         for _ in 0..BP_ITERS {
             let next: Vec<Vec<Plm>> = self
                 .factors
@@ -100,6 +135,8 @@ impl SigmaEngine {
                         .enumerate()
                         .map(|(s, &v)| match f.kinds[s] {
                             PatternKind::Action => Belief::Density(uniform(v)),
+                            // Mean field: the other variables' whole beliefs, not cavities.
+                            _ if variational => state.belief(self, v, None),
                             _ => state.belief(self, v, Some((fi, s))),
                         })
                         .collect();
@@ -107,6 +144,9 @@ impl SigmaEngine {
                         .map(|s| {
                             if f.kinds[s] == PatternKind::Condition {
                                 return uniform(f.vars[s]);
+                            }
+                            if variational {
+                                return self.vmp_message(f.vars[s], s, &functions[fi], &inbound);
                             }
                             let mut g = functions[fi].clone();
                             for j in (0..f.vars.len()).rev().filter(|&j| j != s) {
@@ -119,7 +159,13 @@ impl SigmaEngine {
                                     Belief::Density(m) => g.mul_sum_out(j, m),
                                 };
                             }
-                            nonnegative(g).simplified().normalized()
+                            let msg = nonnegative(g).simplified().normalized();
+                            match &inbound[s] {
+                                Belief::Density(cavity) if ep && self.vars[f.vars[s]].range.is_some() => {
+                                    self.ep_project_plm(f.vars[s], cavity, msg)
+                                }
+                                _ => msg,
+                            }
                         })
                         .collect()
                 })
@@ -135,6 +181,128 @@ impl SigmaEngine {
             }
         }
         Some(state)
+    }
+
+    /// Variational message passing on exact functions: the message into slot `s` (variable
+    /// `v`) is `exp(E_q[ln f])`, the expectation over the other slots' whole beliefs `q`. The
+    /// expectation is taken by Gauss–Legendre quadrature (3 nodes per slice of the factor's
+    /// function and the belief, exact for the polynomial part) and evaluated at 2 knots per
+    /// slice of `v` (one per unit slice of a discrete variable), between which the message is
+    /// linear.
+    fn vmp_message(&self, v: usize, s: usize, function: &Plm, inbound: &[Belief]) -> Plm {
+        let n = inbound.len();
+        // Quadrature nodes `(x, weight)` of every other slot, weights summing to 1.
+        let mut nodes: Vec<Vec<(f64, f64)>> = Vec::with_capacity(n);
+        let mut combos = 1usize;
+        for (j, b) in inbound.iter().enumerate() {
+            if j == s {
+                nodes.push(vec![(0.0, 1.0)]);
+                continue;
+            }
+            let list = match b {
+                Belief::Point(x) => vec![(*x, 1.0)],
+                Belief::Density(q) => {
+                    let gauss = combos.saturating_mul(3 * q.regions().max(1)) <= MAX_VMP_NODES;
+                    quadrature(&function.bounds[j], q, gauss)
+                }
+            };
+            combos = combos.saturating_mul(list.len().max(1));
+            nodes.push(list);
+        }
+        let expected_log = |x: f64| -> f64 {
+            let mut total = 0.0;
+            let mut at = vec![0.0; n];
+            let mut idx = vec![0usize; n];
+            loop {
+                let mut w = 1.0;
+                for j in 0..n {
+                    if j == s {
+                        at[j] = x;
+                    } else {
+                        let (xj, wj) = nodes[j][idx[j]];
+                        at[j] = xj;
+                        w *= wj;
+                    }
+                }
+                if w > 0.0 {
+                    total += w * function.eval(&at).max(1e-30).ln();
+                }
+                // Next combination.
+                let mut j = 0;
+                loop {
+                    if j == n {
+                        return total;
+                    }
+                    if j != s && idx[j] + 1 < nodes[j].len() {
+                        idx[j] += 1;
+                        break;
+                    }
+                    idx[j] = 0;
+                    j += 1;
+                }
+            }
+        };
+        let bounds = merge_bounds(&function.bounds[s], &self.grid_bounds(v));
+        if self.vars[v].range.is_none() {
+            let logs: Vec<f64> = bounds.windows(2).map(|w| expected_log((w[0] + w[1]) / 2.0)).collect();
+            let top = logs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let values: Vec<f64> = logs.iter().map(|l| (l - top).exp()).collect();
+            return Plm::steps(bounds, &values).simplified().normalized();
+        }
+        let mut knots: Vec<f64> = Vec::new();
+        for w in bounds.windows(2) {
+            for i in 0..VMP_KNOTS {
+                knots.push(w[0] + (w[1] - w[0]) * i as f64 / VMP_KNOTS as f64);
+            }
+        }
+        let end = bounds[bounds.len() - 1];
+        knots.push(end);
+        let logs: Vec<f64> =
+            knots.iter().map(|&x| expected_log(if x >= end { end - (end - bounds[0]) * 1e-9 } else { x })).collect();
+        let top = logs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let values: Vec<f64> = logs.iter().map(|l| (l - top).exp()).collect();
+        let pieces: Vec<(f64, f64)> = knots
+            .windows(2)
+            .zip(values.windows(2))
+            .map(|(x, y)| {
+                let slope = (y[1] - y[0]) / (x[1] - x[0]);
+                (y[0] - slope * x[0], slope)
+            })
+            .collect();
+        nonnegative(Plm::linear_pieces(knots, &pieces)).simplified().normalized()
+    }
+
+    /// Expectation propagation on exact functions: the tilted belief `cavity · msg` and the
+    /// cavity are moment-matched exactly (their means and variances from the piecewise-linear
+    /// densities), and the message is the quotient of the two Gaussians, laid out at
+    /// [`EP_KNOTS`] knots over `v`'s range. A quotient without positive precision (the factor
+    /// adds no information in the Gaussian family) leaves the exact message.
+    fn ep_project_plm(&self, v: usize, cavity: &Plm, msg: Plm) -> Plm {
+        let Some((lo, hi)) = self.vars[v].range else { return msg };
+        let tilted = cavity.mul_1d(&msg).normalized();
+        let (mt, vt) = tilted.mean_variance();
+        let (mc, vc) = cavity.clone().normalized().mean_variance();
+        if !(vt > 1e-12 && vc > 1e-12 && vt.is_finite() && vc.is_finite()) {
+            return msg;
+        }
+        let precision = 1.0 / vt - 1.0 / vc;
+        if precision <= 1e-12 {
+            return msg;
+        }
+        let mean = (mt / vt - mc / vc) / precision;
+        let var = 1.0 / precision;
+        let (lo, hi) = (lo as f64, hi as f64);
+        let knots: Vec<f64> = (0..=EP_KNOTS).map(|i| lo + (hi - lo) * i as f64 / EP_KNOTS as f64).collect();
+        let values: Vec<f64> = knots.iter().map(|x| (-0.5 * (x - mean).powi(2) / var).exp()).collect();
+        let pieces: Vec<(f64, f64)> = knots
+            .windows(2)
+            .zip(values.windows(2))
+            .map(|(x, y)| {
+                let slope = (y[1] - y[0]) / (x[1] - x[0]);
+                (y[0] - slope * x[0], slope)
+            })
+            .collect();
+        Plm::linear_pieces(knots, &pieces).simplified().normalized()
     }
 
     /// Slice boundaries of a variable's whole domain (unit slices for a discrete variable,

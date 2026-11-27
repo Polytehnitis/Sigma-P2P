@@ -269,3 +269,103 @@ fn learned_functions_sync_to_paired_devices() {
     assert_eq!(sync::keys::function_slot("#3"), None);
     assert_eq!(sync::keys::function_slot("x#y#4"), Some(("x#y".into(), 4)));
 }
+
+/// X → Y → Z, each a linear Gaussian over [0, 20): X ~ N(6, 2²), Y ~ N(X + 2, 1.5²),
+/// Z ~ N(Y + 1, 1.5²).
+fn chain(id: &NodeIdentity) -> SigmaEngine {
+    let program = Program {
+        types: vec![TypeDef::continuous("v", 0.0, 20.0, 40)],
+        predicates: vec![
+            pred("X", PredicateRole::Context, Some("v")),
+            pred("Y", PredicateRole::Context, Some("v")),
+            pred("Z", PredicateRole::Context, Some("v")),
+        ],
+        conditionals: vec![
+            learnable(
+                vec![pat(PatternKind::Condact, "X")],
+                Function::Gaussian { target: 0, mean: vec![6.0, 0.0], std: 2.0 },
+                None,
+            ),
+            learnable(
+                vec![pat(PatternKind::Condact, "X"), pat(PatternKind::Condact, "Y")],
+                Function::Gaussian { target: 1, mean: vec![2.0, 1.0, 0.0], std: 1.5 },
+                None,
+            ),
+            learnable(
+                vec![pat(PatternKind::Condact, "Y"), pat(PatternKind::Condact, "Z")],
+                Function::Gaussian { target: 1, mean: vec![1.0, 1.0, 0.0], std: 1.5 },
+                None,
+            ),
+        ],
+    };
+    let mut engine = SigmaEngine::new();
+    engine.compile_skill(signed_program(id, "chain", program)).unwrap();
+    engine
+}
+
+#[test]
+fn variational_message_passing_runs_on_exact_functions() {
+    let id = NodeIdentity::generate();
+    let mut engine = chain(&id);
+    engine.set_value("Z", 14.0).unwrap();
+    // Exact sum-product on piecewise-linear functions.
+    let (bp_mean, bp_var) = engine.density("X").unwrap().mean_variance();
+    engine.inference = Inference::VariationalMessagePassing;
+    let vmp = engine.density("X").expect("VMP runs on the exact path");
+    let (vmp_mean, vmp_var) = vmp.mean_variance();
+    // The linear-Gaussian posterior mean: X | Z ~ N(6 + 4/8.5·(14 - 9), …) ≈ 8.35.
+    assert!((bp_mean - 8.35).abs() < 0.3, "{bp_mean}");
+    // Mean field finds the mean and underestimates the spread (Y is integrated out exactly by
+    // BP but held as a separate factor by VMP).
+    assert!((vmp_mean - bp_mean).abs() < 0.4, "{vmp_mean} vs {bp_mean}");
+    assert!(vmp_var < bp_var * 0.95, "{vmp_var} vs {bp_var}");
+    // Not the grid: its density has more pieces than the 40 regions' steps would make flat.
+    assert!(vmp.bounds[0].len() > 41);
+    let e = engine.expected_value("X").unwrap();
+    assert!((e as f64 - vmp_mean).abs() < 0.05);
+}
+
+#[test]
+fn expectation_propagation_runs_on_exact_functions() {
+    let id = NodeIdentity::generate();
+    let program = Program {
+        types: vec![TypeDef::continuous("x", 0.0, 10.0, 40)],
+        predicates: vec![pred("X", PredicateRole::Context, Some("x"))],
+        conditionals: vec![
+            learnable(
+                vec![pat(PatternKind::Condact, "X")],
+                Function::Gaussian { target: 0, mean: vec![5.0, 0.0], std: 3.0 },
+                None,
+            ),
+            learnable(
+                vec![pat(PatternKind::Condact, "X")],
+                Function::PiecewiseLinear {
+                    default: 0.05,
+                    pieces: vec![
+                        Piece { lo: vec![2.0], hi: vec![4.0], coef: vec![1.0, 0.0] },
+                        Piece { lo: vec![6.5], hi: vec![7.5], coef: vec![2.0, 0.0] },
+                    ],
+                },
+                None,
+            ),
+        ],
+    };
+    let mut engine = SigmaEngine::new();
+    engine.compile_skill(signed_program(&id, "bimodal", program)).unwrap();
+    let exact = engine.density("X").unwrap();
+    engine.inference = Inference::ExpectationPropagation;
+    let ep = engine.density("X").expect("EP runs on the exact path");
+    let peaks = |p: &Plm| {
+        let xs: Vec<f64> = (0..200).map(|i| 0.025 + i as f64 * 0.05).collect();
+        let ys: Vec<f64> = xs.iter().map(|&x| p.eval(&[x])).collect();
+        let top = ys.iter().copied().fold(0.0, f64::max);
+        // Plateaus count once: a peak is where the density stops rising.
+        (1..ys.len() - 1).filter(|&i| ys[i] > 0.2 * top && ys[i] > ys[i - 1] + 1e-9 && ys[i] >= ys[i + 1]).count()
+    };
+    assert_eq!(peaks(&exact), 2);
+    assert_eq!(peaks(&ep), 1);
+    // The moments of the exact posterior are kept (EP's fixed point on one factor).
+    let ((me, ve), (mp, vp)) = (exact.mean_variance(), ep.mean_variance());
+    assert!((me - mp).abs() < 0.25, "{me} vs {mp}");
+    assert!((ve - vp).abs() < 0.35 * ve, "{ve} vs {vp}");
+}
