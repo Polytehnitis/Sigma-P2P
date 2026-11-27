@@ -38,7 +38,7 @@ pub use mind::{Appraisal, Emotion, MindModel, OtherAgent};
 pub use plm::Plm;
 pub use program::{
     Conditional, Function, Pattern, PatternKind, Piece, PredicateDef, Program, Skill, SkillBody, Term, TypeDef,
-    TypeKind,
+    TypeKind, ValueMap,
 };
 pub use storage::FactorStore;
 pub use substate::Substate;
@@ -1145,6 +1145,8 @@ mod tests_graph_memory;
 mod tests_language;
 #[cfg(test)]
 mod tests_learning;
+#[cfg(test)]
+mod tests_mapped;
 #[cfg(test)]
 mod tests_memory;
 #[cfg(test)]
