@@ -22,8 +22,8 @@
 //! [`SigmaEngine::learn_model_structure`].
 
 use crate::graph_memory::{
-    internal, MAX_MODEL_FACTORS, MAX_PERCEPTION_MODELS, MAX_Q, MAX_Q_STATES, MODEL_SKILL, PERCEPTION_SKILL, Q_DISCOUNT,
-    Q_RATE,
+    internal, MAX_MODEL_FACTORS, MAX_PARENTS, MAX_PARENT_TABLE, MAX_PERCEPTION_MODELS, MAX_Q, MAX_Q_STATES,
+    MODEL_SKILL, PERCEPTION_SKILL, Q_DISCOUNT, Q_RATE,
 };
 use crate::{PredicateRole, SigmaEngine};
 use std::collections::HashMap;
@@ -182,74 +182,46 @@ impl SigmaEngine {
             let samples: Vec<&Experience> = self.experience.iter().filter(|e| e.action == a).collect();
             let an = self.vars[a].schema.name.clone();
             for &p in &preds {
-                let d = self.vars[p].schema.domain_size;
                 let key = (an.clone(), self.vars[p].schema.name.clone());
-                let best = preds
-                    .iter()
-                    .filter(|&&q| q != p)
-                    .filter_map(|&q| {
-                        let dq = self.vars[q].schema.domain_size;
-                        let rows: Vec<(usize, usize, usize)> = samples
-                            .iter()
-                            .filter_map(|e| {
-                                Some((
-                                    e.before.get(p).copied()??,
-                                    e.before.get(q).copied()??,
-                                    e.after.get(p).copied()??,
-                                ))
-                            })
-                            .collect();
-                        if rows.len() < MIN_STRUCTURE_SAMPLES {
-                            return None;
-                        }
-                        let plain = log_likelihood(rows.iter().map(|&(x, _, y)| (x, y)), d);
-                        let cond = log_likelihood(rows.iter().map(|&(x, z, y)| (x * dq + z, y)), d);
-                        let penalty = 0.5 * (rows.len() as f32).ln() * ((dq - 1) * d * (d - 1)) as f32;
-                        let score = cond - plain - penalty;
-                        (score > 0.0).then_some((q, score, rows))
-                    })
-                    .max_by(|x, y| x.1.total_cmp(&y.1));
-                match best {
-                    Some((q, _, rows)) => {
-                        let qn = self.vars[q].schema.name.clone();
-                        if self.models.contexts.get(&key).is_some_and(|(old, _)| *old == qn) {
-                            continue;
-                        }
-                        if !self.models.contexts.contains_key(&key) && self.models.contexts.len() >= MAX_MODEL_FACTORS {
-                            continue;
-                        }
-                        let dq = self.vars[q].schema.domain_size;
-                        // [action, p now, parent now, p next]; only the row of the action
-                        // taken is learned, the other stays uniform.
-                        let mut table = vec![1.0 / d as f32; 2 * d * dq * d];
-                        let mut counts = vec![0.5f32; d * dq * d];
-                        for &(x, z, y) in &rows {
-                            counts[(x * dq + z) * d + y] += 1.0;
-                        }
-                        for row in 0..d * dq {
-                            let total: f32 = counts[row * d..(row + 1) * d].iter().sum();
-                            for y in 0..d {
-                                table[d * dq * d + row * d + y] = counts[row * d + y] / total;
-                            }
-                        }
-                        self.models.contexts.insert(key, (qn, table));
-                        changed = true;
+                let parents = self.select_parents(&samples, p, &preds);
+                if parents.is_empty() {
+                    // Enough evidence and no parent helps any more: back to the plain model.
+                    let enough = samples
+                        .iter()
+                        .filter(|e| {
+                            e.before.get(p).copied().flatten().is_some() && e.after.get(p).copied().flatten().is_some()
+                        })
+                        .count()
+                        >= MIN_STRUCTURE_SAMPLES;
+                    if enough {
+                        changed |= self.models.contexts.remove(&key).is_some();
+                        changed |= self.models.parent_sets.remove(&key).is_some();
                     }
-                    None => {
-                        // Enough evidence and no parent helps any more: back to the plain model.
-                        let enough = samples
-                            .iter()
-                            .filter(|e| {
-                                e.before.get(p).copied().flatten().is_some()
-                                    && e.after.get(p).copied().flatten().is_some()
-                            })
-                            .count()
-                            >= MIN_STRUCTURE_SAMPLES;
-                        if enough && self.models.contexts.remove(&key).is_some() {
-                            changed = true;
-                        }
-                    }
+                    continue;
                 }
+                let names: Vec<String> = parents.iter().map(|&q| self.vars[q].schema.name.clone()).collect();
+                let held: Option<Vec<String>> =
+                    match (self.models.contexts.get(&key), self.models.parent_sets.get(&key)) {
+                        (Some((q, _)), _) => Some(vec![q.clone()]),
+                        (_, Some((qs, _))) => Some(qs.clone()),
+                        _ => None,
+                    };
+                if held.as_ref() == Some(&names) {
+                    continue;
+                }
+                let total = self.models.contexts.len() + self.models.parent_sets.len();
+                if held.is_none() && total >= MAX_MODEL_FACTORS {
+                    continue;
+                }
+                let table = self.parent_table(&samples, p, &parents);
+                self.models.contexts.remove(&key);
+                self.models.parent_sets.remove(&key);
+                if names.len() == 1 {
+                    self.models.contexts.insert(key, (names[0].clone(), table));
+                } else {
+                    self.models.parent_sets.insert(key, (names, table));
+                }
+                changed = true;
             }
         }
         let perceptions = self.discover_perception_models(&preds);
@@ -261,8 +233,88 @@ impl SigmaEngine {
             });
             self.rebuild_memory_factors();
         }
-        let parents = self.models.contexts.iter().map(|((a, p), (q, _))| (a.clone(), p.clone(), q.clone())).collect();
-        StructureReport { parents, perceptions }
+        let single = self.models.contexts.iter().map(|((a, p), (q, _))| (a.clone(), p.clone(), q.clone()));
+        let several = self
+            .models
+            .parent_sets
+            .iter()
+            .flat_map(|((a, p), (qs, _))| qs.iter().map(move |q| (a.clone(), p.clone(), q.clone())));
+        StructureReport { parents: single.chain(several).collect(), perceptions }
+    }
+
+    /// The parents of `p`'s transition under these samples, chosen greedily: each round adds
+    /// the predicate whose gain in log-likelihood, over the samples where it and the parents so
+    /// far are known, beats its BIC penalty by the most; it stops when none does, at
+    /// [`MAX_PARENTS`], or when the table would grow past [`MAX_PARENT_TABLE`].
+    fn select_parents(&self, samples: &[&Experience], p: usize, preds: &[usize]) -> Vec<usize> {
+        let d = self.vars[p].schema.domain_size;
+        let mut parents: Vec<usize> = Vec::new();
+        while parents.len() < MAX_PARENTS {
+            let size: usize = 2 * d * d * parents.iter().map(|&q| self.vars[q].schema.domain_size).product::<usize>();
+            let best = preds
+                .iter()
+                .copied()
+                .filter(|&q| q != p && !parents.contains(&q))
+                .filter(|&q| size * self.vars[q].schema.domain_size <= MAX_PARENT_TABLE)
+                .filter_map(|q| {
+                    let mut with = parents.clone();
+                    with.push(q);
+                    let rows = self.parent_rows(samples, p, &with);
+                    if rows.len() < MIN_STRUCTURE_SAMPLES {
+                        return None;
+                    }
+                    let dq = self.vars[q].schema.domain_size;
+                    // Rows keyed without q, then with it (q is the last, fastest-varying digit).
+                    let before = log_likelihood(rows.iter().map(|(x, z, y)| (x * size + z / dq, *y)), d);
+                    let after = log_likelihood(rows.iter().map(|(x, z, y)| (x * size * dq + z, *y)), d);
+                    let configs = size / (2 * d * d) * d;
+                    let penalty = 0.5 * (rows.len() as f32).ln() * (configs * (dq - 1) * (d - 1)) as f32;
+                    let score = after - before - penalty;
+                    (score > 0.0).then_some((q, score))
+                })
+                .max_by(|x, y| x.1.total_cmp(&y.1));
+            match best {
+                Some((q, _)) => parents.push(q),
+                None => break,
+            }
+        }
+        parents
+    }
+
+    /// `(p now, parents' joint value, p next)` for the samples where all are known; the
+    /// parents' joint value is row-major over `parents`.
+    fn parent_rows(&self, samples: &[&Experience], p: usize, parents: &[usize]) -> Vec<(usize, usize, usize)> {
+        samples
+            .iter()
+            .filter_map(|e| {
+                let x = e.before.get(p).copied()??;
+                let y = e.after.get(p).copied()??;
+                let mut z = 0;
+                for &q in parents {
+                    z = z * self.vars[q].schema.domain_size + e.before.get(q).copied()??;
+                }
+                Some((x, z, y))
+            })
+            .collect()
+    }
+
+    /// The transition table `[action, p now, parents…, p next]` estimated from the samples;
+    /// only the row of the action taken is learned, the other stays uniform.
+    fn parent_table(&self, samples: &[&Experience], p: usize, parents: &[usize]) -> Vec<f32> {
+        let d = self.vars[p].schema.domain_size;
+        let dz: usize = parents.iter().map(|&q| self.vars[q].schema.domain_size).product();
+        let mut table = vec![1.0 / d as f32; 2 * d * dz * d];
+        let mut counts = vec![0.5f32; d * dz * d];
+        for (x, z, y) in self.parent_rows(samples, p, parents) {
+            counts[(x * dz + z) * d + y] += 1.0;
+        }
+        for row in 0..d * dz {
+            let total: f32 = counts[row * d..(row + 1) * d].iter().sum();
+            for y in 0..d {
+                table[d * dz * d + row * d + y] = counts[row * d + y] / total;
+            }
+        }
+        table
     }
 
     /// Perception models for pairs of context predicates that are strongly coupled when both
