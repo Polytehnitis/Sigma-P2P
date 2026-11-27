@@ -16,6 +16,7 @@ pub mod demos;
 mod exact;
 pub mod graph_memory;
 pub mod language;
+pub mod map;
 pub mod memory;
 pub mod mind;
 pub mod particles;
@@ -35,6 +36,7 @@ pub use crypto::NodeIdentity;
 pub use decision::{Preference, PreferenceKind, Selection};
 pub use graph_memory::{ActionModel, LearnedModels};
 pub use language::{Intent, Interpretation, PhraseBook, Route};
+pub use map::MapEstimate;
 pub use memory::{Episode, EpisodicMemory, SemanticMemory, SemanticRecall};
 pub use mind::{Appraisal, Emotion, MindModel, OtherAgent};
 pub use plm::Plm;
@@ -62,6 +64,17 @@ pub(crate) const BP_ITERS: usize = 50;
 const BP_TOLERANCE: f32 = 1e-5;
 /// Candidate actions whose posteriors differ by less than this are tied.
 pub const TIE_MARGIN: f32 = 0.02;
+
+/// How messages summarize out the other variables of a factor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Inference {
+    /// Sum-product: beliefs are marginal probabilities (the default).
+    #[default]
+    SumProduct,
+    /// Max-product: beliefs are max-marginals, the probability of the best joint assignment
+    /// that gives the variable each value, so their argmaxes form a MAP estimate.
+    MaxProduct,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PredicateRole {
@@ -342,6 +355,8 @@ pub struct SigmaEngine {
     options: HashMap<String, PredicateOptions>,
     /// Evidence of multi-valued predicates: the set of values that hold.
     multi: HashMap<usize, Vec<usize>>,
+    /// Sum-product (marginals) or max-product (MAP) message passing.
+    pub inference: Inference,
 }
 
 impl SigmaEngine {
@@ -1175,6 +1190,7 @@ impl SigmaEngine {
         // Slots over multi-valued predicates, which are maximized over (Sigma's universal).
         let universal: Vec<Vec<bool>> =
             self.factors.iter().map(|f| f.vars.iter().map(|&v| !self.options_of(v).unique).collect()).collect();
+        let maximize = self.inference == Inference::MaxProduct;
         for _ in 0..BP_ITERS {
             let next: Vec<Vec<Vec<f32>>> = self
                 .factors
@@ -1197,6 +1213,17 @@ impl SigmaEngine {
                         .map(|s| {
                             if f.kinds[s] == PatternKind::Condition {
                                 return uniform(f.vars[s]);
+                            }
+                            if maximize {
+                                // Max-product: every other slot is maximized over.
+                                let mut out = vec![0.0f32; inbound[s].len()];
+                                for (idx, &w) in tables[fi].indexed_iter() {
+                                    let p = (0..inbound.len())
+                                        .filter(|&j| j != s)
+                                        .fold(w, |acc, j| acc * inbound[j][idx[j]]);
+                                    out[idx[s]] = out[idx[s]].max(p);
+                                }
+                                return normalize(out);
                             }
                             if !universal[fi].iter().enumerate().any(|(j, &u)| u && j != s) {
                                 let mut out = vec![0.0; inbound[s].len()];
@@ -1340,6 +1367,8 @@ mod tests_graph_memory;
 mod tests_language;
 #[cfg(test)]
 mod tests_learning;
+#[cfg(test)]
+mod tests_map;
 #[cfg(test)]
 mod tests_mapped;
 #[cfg(test)]

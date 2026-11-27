@@ -84,6 +84,7 @@ impl SigmaEngine {
             msgs: self.factors.iter().map(|f| f.vars.iter().map(|&v| uniform(v)).collect()).collect(),
             prior,
         };
+        let maximize = self.inference == crate::Inference::MaxProduct;
         for _ in 0..BP_ITERS {
             let next: Vec<Vec<Plm>> = self
                 .factors
@@ -111,6 +112,10 @@ impl SigmaEngine {
                             for j in (0..f.vars.len()).rev().filter(|&j| j != s) {
                                 g = match &inbound[j] {
                                     Belief::Point(x) => g.substitute(j, *x),
+                                    // Max-product, or a multi-valued predicate: maximized over.
+                                    Belief::Density(m) if maximize || !self.options_of(f.vars[j]).unique => {
+                                        g.mul_max_out(j, m)
+                                    }
                                     Belief::Density(m) => g.mul_sum_out(j, m),
                                 };
                             }

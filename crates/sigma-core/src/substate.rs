@@ -286,7 +286,7 @@ impl SigmaEngine {
 
     /// A copy of this state's knowledge, working memory and goals to reason in (no memories,
     /// action safety or buffers beyond the current percepts).
-    fn hypothetical(&self) -> SigmaEngine {
+    pub(crate) fn hypothetical(&self) -> SigmaEngine {
         SigmaEngine {
             vars: self.vars.clone(),
             index: self.index.clone(),
@@ -301,6 +301,7 @@ impl SigmaEngine {
             particle_seed: self.particle_seed,
             tabulate_continuous: self.tabulate_continuous,
             attended: self.attended.clone(),
+            inference: self.inference,
             options: self.options.clone(),
             multi: self.multi.clone(),
             ..SigmaEngine::default()
