@@ -15,6 +15,7 @@ pub mod crypto;
 pub mod decision;
 pub mod demos;
 mod exact;
+pub mod field;
 pub mod generalize;
 pub mod graph_memory;
 pub mod language;
@@ -399,6 +400,10 @@ pub struct SigmaEngine {
     experience: VecDeque<generalize::Experience>,
     /// Transitions since the last structure-learning pass.
     since_structure: usize,
+    /// Unsupervised category learning: every cycle, the context working memory holds is
+    /// categorized into the semantic memory's concepts, or starts a new one (see
+    /// [`SemanticMemory::discover`]).
+    pub discover_categories: bool,
     /// Turns off automatic structure learning of transition parents and perception models
     /// (it still runs on demand with [`SigmaEngine::learn_model_structure`]).
     pub fixed_structure: bool,
@@ -557,6 +562,28 @@ impl SigmaEngine {
             self.exact.remove(&v);
             self.multi.remove(&v);
         }
+    }
+
+    /// Categorizes what working memory holds of the visible context predicates without a
+    /// label: it joins the concept that explains it best, or starts a new one. Returns the
+    /// concept, or `None` when working memory holds no context.
+    pub fn discover_category(&mut self) -> Option<String> {
+        let features: Vec<(String, usize)> = self
+            .working_memory()
+            .into_iter()
+            .filter(|(n, _)| {
+                !graph_memory::internal(n)
+                    && self.index.get(n).is_some_and(|&v| {
+                        self.vars[v].schema.role == PredicateRole::Context && self.vars[v].range.is_none()
+                    })
+            })
+            .collect();
+        (!features.is_empty()).then(|| self.semantic.discover(&features))
+    }
+
+    /// The current temperature of a Boltzmann or annealed selection (`None` otherwise).
+    pub fn temperature(&self) -> Option<f32> {
+        self.selection.temperature_after(self.decisions)
     }
 
     /// Sets the options of predicate `name` (a predicate name, applying to all its ground
@@ -866,6 +893,9 @@ impl SigmaEngine {
             self.record_experience(a, &before);
         }
         self.learn_perception_models();
+        if self.discover_categories {
+            self.discover_category();
+        }
         // Appraise what changed since the last cycle, before elaborating on it.
         let open = self.goal_stack.len();
         let progress = self.pop_satisfied_goals().len() as f32 / open.max(1) as f32;
@@ -1594,6 +1624,8 @@ mod tests_options;
 mod tests_parse;
 #[cfg(test)]
 mod tests_particles;
+#[cfg(test)]
+mod tests_smaller;
 #[cfg(test)]
 mod tests_substates;
 #[cfg(test)]

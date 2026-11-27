@@ -134,25 +134,53 @@ impl SigmaEngine {
     }
 
     /// Attention: when a budget is set, only the most salient factors take part in this
-    /// cycle's elaboration. Salience is utility, times relevance (on a path from a stacked
-    /// goal: 1, otherwise 0.25), times one plus the surprise of the factor's variables.
+    /// cycle's elaboration. Salience is the posterior of `@Attend(f)` in an attention graph
+    /// solved by the engine's message passing: evidence from the factor's utility and its
+    /// relevance (on a path from a stacked goal or not), raised by the surprise of its
+    /// variables, which factors sharing a variable share.
     pub(crate) fn attend(&self, surprise: &[f32]) -> Option<Vec<bool>> {
         let k = self.attention_budget?;
         let relevant: HashSet<usize> =
             self.goal_stack.iter().filter_map(|g| self.index.get(g)).flat_map(|&v| self.reachable(v).0).collect();
-        let mut ranked: Vec<(usize, f32)> = self
-            .factors
-            .iter()
-            .enumerate()
-            .map(|(fi, f)| {
-                let relevance = if relevant.contains(&fi) { 1.0 } else { 0.25 };
-                let novelty = 1.0 + f.vars.iter().map(|&v| surprise[v]).fold(0.0, f32::max);
-                (fi, f.utility_score.max(0.01) * relevance * novelty)
-            })
-            .collect();
-        // Memories and models are always attended and take no part of the budget.
-        ranked.retain(|&(fi, _)| !self.factors[fi].memory);
+        // Attention is inferred by message passing, in a graph of its own: `@Attend(f)` for each
+        // skill factor, with its utility and its relevance to the stacked goals as evidence, and
+        // `@Novel(v)` for each surprising variable, which raises the attention of every factor
+        // that touches it.
+        let mut g = SigmaEngine::new();
+        let mut b = crate::graph_memory::Builder::new("@attention");
+        let var = |g: &mut SigmaEngine, name: String| {
+            g.register_predicate(&crate::PredicateSchema { name, domain_size: 2, role: crate::PredicateRole::Context })
+                .expect("fresh names")
+        };
+        let c = crate::PatternKind::Condact;
+        let mut attend: Vec<(usize, usize)> = Vec::new();
+        let mut novel: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for (fi, f) in self.factors.iter().enumerate().filter(|(_, f)| !f.memory) {
+            let a = var(&mut g, format!("@Attend({fi})"));
+            attend.push((fi, a));
+            let u = f.utility_score.clamp(0.01, 0.99);
+            b.add(vec![a], vec![c], &[2], vec![1.0 - u, u], None);
+            let r = if relevant.contains(&fi) { 0.8 } else { 0.2 };
+            b.add(vec![a], vec![c], &[2], vec![1.0 - r, r], None);
+            for &v in &f.vars {
+                let s = surprise.get(v).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                if s <= 0.0 {
+                    continue;
+                }
+                let n = *novel.entry(v).or_insert_with(|| {
+                    let n = var(&mut g, format!("@Novel({v})"));
+                    b.add(vec![n], vec![c], &[2], vec![1.0 - s, s], None);
+                    n
+                });
+                // A novel variable doubles the odds of attending to the factors it is in.
+                b.add(vec![n, a], vec![c, c], &[2, 2], vec![1.0, 1.0, 1.0, 2.0], None);
+            }
+        }
+        g.factors.extend(b.factors);
+        let p = g.infer(|_| None);
+        let mut ranked: Vec<(usize, f32)> = attend.iter().map(|&(fi, a)| (fi, p[a][1])).collect();
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        // Memories and models are always attended and take no part of the budget.
         let mut mask: Vec<bool> = self.factors.iter().map(|f| f.memory).collect();
         ranked.iter().take(k).for_each(|&(fi, _)| mask[fi] = true);
         Some(mask)
