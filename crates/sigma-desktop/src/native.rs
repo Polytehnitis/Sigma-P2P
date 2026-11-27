@@ -185,7 +185,7 @@ mod x11_screen {
             }
             // 24/32-bit TrueColor is BGRX in memory.
             let mut rgba = image.data;
-            for px in rgba.chunks_exact_mut(4) {
+            for px in rgba.as_chunks_mut::<4>().0 {
                 px.swap(0, 2);
                 px[3] = 255;
             }
