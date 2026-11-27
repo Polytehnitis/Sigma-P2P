@@ -188,3 +188,107 @@ fn perception_models_are_discovered() {
     engine.set_evidence("WetGrass", 0).unwrap();
     assert!(engine.posterior("Raining").unwrap()[1] < 0.25);
 }
+
+/// `Toggle` flips `Light` only when both `Power` and `Breaker` are on.
+fn breaker_experience(engine: &mut SigmaEngine, n: usize) {
+    for i in 0..n {
+        let (light, power, breaker) = (i % 2, (i / 2) % 2, (i / 4) % 2);
+        engine.set_evidence("Light", light).unwrap();
+        engine.set_evidence("Power", power).unwrap();
+        engine.set_evidence("Breaker", breaker).unwrap();
+        engine.push_goal("GoalLamp");
+        assert_eq!(engine.cognitive_cycle().selected_action.as_deref(), Some("Toggle"));
+        engine.goal_stack.clear();
+        let on = power == 1 && breaker == 1;
+        engine.set_evidence("Light", if on { 1 - light } else { light }).unwrap();
+        engine.cognitive_cycle();
+    }
+}
+
+#[test]
+fn transitions_learn_several_parents() {
+    let id = NodeIdentity::generate();
+    let mut engine = switched(&id);
+    engine.register_predicate(&bin("Breaker", Context)).unwrap();
+    breaker_experience(&mut engine, 48);
+    let report = engine.learn_model_structure();
+    let key = ("Toggle".to_string(), "Light".to_string());
+    let (parents, t) = engine.models.parent_sets.get(&key).cloned().unwrap_or_else(|| panic!("{:?}", report.parents));
+    let mut sorted = parents.clone();
+    sorted.sort();
+    assert_eq!(sorted, ["Breaker", "Power"]);
+    assert!(!engine.models.contexts.contains_key(&key));
+    for q in &parents {
+        assert!(report.parents.contains(&("Toggle".into(), "Light".into(), q.clone())), "{:?}", report.parents);
+    }
+    // The five-slot factor is in the graph.
+    let f = engine
+        .memory_factors()
+        .iter()
+        .find(|f| engine.vars[*f.vars.last().unwrap()].schema.name == transition_name("Light", "Toggle"))
+        .unwrap();
+    assert_eq!(f.vars.len(), 5);
+    assert_eq!(t.len(), 32);
+    // Reading it: Toggle turns the light on only with both on.
+    let idx = |name: &str| parents.iter().position(|q| q == name).unwrap();
+    let p_on = |power: usize, breaker: usize| {
+        let mut z = [0usize; 2];
+        z[idx("Power")] = power;
+        z[idx("Breaker")] = breaker;
+        let row = 16 + (z[0] * 2 + z[1]) * 2; // action taken, Light = 0
+        t[row + 1] / (t[row] + t[row + 1])
+    };
+    assert!(p_on(1, 1) > 0.8, "{t:?}");
+    assert!(p_on(1, 0) < 0.2 && p_on(0, 1) < 0.2 && p_on(0, 0) < 0.2, "{t:?}");
+
+    // Planning uses both: G needs Light, and Toggle helps only with both on.
+    let decide = |power: usize, breaker: usize| {
+        let mut e = switched(&id);
+        e.register_predicate(&bin("Breaker", Context)).unwrap();
+        e.models = engine.models.clone();
+        e.rebuild_memory_factors();
+        e.set_evidence("Light", 0).unwrap();
+        e.set_evidence("Power", power).unwrap();
+        e.set_evidence("Breaker", breaker).unwrap();
+        e.push_goal("G");
+        (0..crate::substate::MAX_HORIZON).find_map(|_| e.cognitive_cycle().selected_action)
+    };
+    assert_eq!(decide(1, 1).as_deref(), Some("Toggle"));
+    assert_eq!(decide(1, 0), None);
+
+    // The model syncs, is validated, and older layouts still decode.
+    let model = engine.models.action_model("Toggle");
+    assert!(model.is_valid());
+    assert_eq!(ActionModel::decode(&postcard::to_allocvec(&model).unwrap()).unwrap(), model);
+    let mut bad = model.clone();
+    bad.parent_sets.insert("Light".into(), (vec!["Power".into(), "Power".into()], vec![0.5; 32]));
+    assert!(!bad.is_valid(), "repeated parent");
+    let mut bad = model.clone();
+    bad.parent_sets.insert("Light".into(), (vec!["Power".into(), "Light".into()], vec![0.5; 32]));
+    assert!(!bad.is_valid(), "self parent");
+    let m = &engine.models;
+    let v4 = postcard::to_allocvec(&(
+        &m.effects,
+        &m.rewards,
+        &m.transitions,
+        &m.perceptions,
+        &m.utilities,
+        &m.q_features,
+        &m.contexts,
+        &m.functions,
+    ))
+    .unwrap();
+    let decoded = LearnedModels::decode(&v4).unwrap();
+    assert_eq!(decoded.transitions, m.transitions);
+    assert!(decoded.parent_sets.is_empty());
+    let v3 = postcard::to_allocvec(&(
+        &model.reward,
+        &model.effects,
+        &model.transitions,
+        &model.utilities,
+        &model.features,
+        &model.contexts,
+    ))
+    .unwrap();
+    assert_eq!(ActionModel::decode(&v3).unwrap().transitions, model.transitions);
+}

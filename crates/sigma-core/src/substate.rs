@@ -707,28 +707,26 @@ impl SigmaEngine {
             let (q, q0) = (t[3] / (t[2] + t[3]), t[1] / (t[0] + t[1]));
             q > SUBGOAL_PROMOTION && q - q0 >= TIE_MARGIN
         };
-        // A transition model, read at the (sub)goal's current value (and its parent's, for a
-        // context-conditioned one): binary, [a, g, @Trans] or [a, g, parent, @Trans].
+        // A transition model, read at the (sub)goal's current value (and its parents', for a
+        // context-conditioned one): binary, [a, g, @Trans] or [a, g, parents…, @Trans].
         let transition = |f: &crate::FactorNode, a: usize| {
             let an = &self.vars[a].schema.name;
             let n = f.vars.len();
-            if !(n == 3 || n == 4) || f.vars[0] != a || f.table.shape()[1] != 2 {
+            if n < 3 || f.vars[0] != a || f.table.shape()[1] != 2 {
                 return false;
             }
             let g = &self.vars[f.vars[1]].schema.name;
             if !open.contains(&g) || self.vars[f.vars[n - 1]].schema.name != transition_name(g, an) {
                 return false;
             }
-            let Some(x0) = self.vars[f.vars[1]].evidence else { return false };
-            // Row of: action taken, current value x0, and the parent's current value.
-            let row = if n == 3 {
-                [1, x0, 0]
-            } else {
-                let Some(xq) = self.vars[f.vars[2]].evidence else { return false };
-                [1, x0, xq]
-            };
+            // Row of: action taken, current value, and the parents' current values.
+            let mut row = vec![1];
+            for &v in &f.vars[1..n - 1] {
+                let Some(x) = self.vars[v].evidence else { return false };
+                row.push(x);
+            }
             let at = |y: usize| {
-                let idx: Vec<usize> = row[..n - 1].iter().copied().chain([y]).collect();
+                let idx: Vec<usize> = row.iter().copied().chain([y]).collect();
                 f.table[idx.as_slice()]
             };
             at(1) / (at(0) + at(1)) > SUBGOAL_PROMOTION

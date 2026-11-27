@@ -127,6 +127,34 @@ pub struct LearnedModels {
     /// `(skill, weight offset)` -> the learned parameters of a Gaussian or neural function
     /// (see [`crate::parametric`]). Persisted with the memories and synced to paired devices.
     pub functions: BTreeMap<(String, usize), crate::Function>,
+    /// `(action, predicate)` -> `(parents, P(predicate after | action, predicate now, parents
+    /// now))`, 2 × d × d_1 × … × d_k × d: a transition model conditioned on two or more
+    /// predicates found by structure learning (one parent is kept in `contexts`).
+    pub parent_sets: BTreeMap<(String, String), (Vec<String>, Vec<f32>)>,
+}
+
+/// The models as stored before multi-parent transition models existed.
+#[derive(Deserialize)]
+struct ModelsV4 {
+    effects: BTreeMap<(String, String), Vec<f32>>,
+    rewards: BTreeMap<String, Vec<f32>>,
+    transitions: BTreeMap<(String, String), Vec<f32>>,
+    perceptions: BTreeMap<(String, String), Vec<f32>>,
+    utilities: BTreeMap<(String, String), f32>,
+    q_features: BTreeMap<(String, String), f32>,
+    contexts: BTreeMap<(String, String), (String, Vec<f32>)>,
+    functions: BTreeMap<(String, usize), crate::Function>,
+}
+
+/// An action's models as synced before multi-parent transition models existed.
+#[derive(Deserialize)]
+struct ActionModelV3 {
+    reward: Option<Vec<f32>>,
+    effects: BTreeMap<String, Vec<f32>>,
+    transitions: BTreeMap<String, Vec<f32>>,
+    utilities: BTreeMap<String, f32>,
+    features: BTreeMap<String, f32>,
+    contexts: BTreeMap<String, (String, Vec<f32>)>,
 }
 
 /// The models as stored before learned analytic functions existed.
@@ -189,7 +217,14 @@ pub struct ActionModel {
     pub features: BTreeMap<String, f32>,
     /// Predicate -> `(parent, P(predicate after | action, predicate now, parent now))`.
     pub contexts: BTreeMap<String, (String, Vec<f32>)>,
+    /// Predicate -> `(parents, P(predicate after | action, predicate now, parents now))`.
+    pub parent_sets: BTreeMap<String, (Vec<String>, Vec<f32>)>,
 }
+
+/// Most parents a transition model conditions on (besides the predicate's own value).
+pub const MAX_PARENTS: usize = 3;
+/// Most entries of a multi-parent transition table.
+pub const MAX_PARENT_TABLE: usize = 8192;
 
 /// Longest action or predicate name a synced model may carry.
 const MAX_MODEL_NAME: usize = 128;
@@ -219,12 +254,34 @@ impl ActionModel {
                     && (2..=MAX_MODEL_DOMAIN).any(|d| (2..=MAX_MODEL_DOMAIN).any(|dq| 2 * d * d * dq == t.len()))
                     && table_ok(t)
             })
+            && self.parent_sets.len() <= MAX_MODEL_FACTORS
+            && self.parent_sets.iter().all(|(p, (qs, t))| {
+                let distinct = qs.iter().enumerate().all(|(i, q)| !qs[..i].contains(q));
+                name_ok(p)
+                    && (2..=MAX_PARENTS).contains(&qs.len())
+                    && distinct
+                    && qs.iter().all(|q| name_ok(q) && q != p)
+                    && (16..=MAX_PARENT_TABLE).contains(&t.len())
+                    && t.len() % 2 == 0
+                    && table_ok(t)
+            })
     }
 
     /// Decodes a synced model, including one written before transition and utility models
     /// existed.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         postcard::from_bytes::<Self>(bytes).ok().or_else(|| {
+            if let Ok(v3) = postcard::from_bytes::<ActionModelV3>(bytes) {
+                return Some(ActionModel {
+                    reward: v3.reward,
+                    effects: v3.effects,
+                    transitions: v3.transitions,
+                    utilities: v3.utilities,
+                    features: v3.features,
+                    contexts: v3.contexts,
+                    ..Default::default()
+                });
+            }
             if let Ok(v2) = postcard::from_bytes::<ActionModelV2>(bytes) {
                 return Some(ActionModel {
                     reward: v2.reward,
@@ -269,6 +326,7 @@ impl LearnedModels {
             .chain(self.utilities.keys().map(|(a, _)| a))
             .chain(self.q_features.keys().map(|(a, _)| a))
             .chain(self.contexts.keys().map(|(a, _)| a))
+            .chain(self.parent_sets.keys().map(|(a, _)| a))
             .cloned()
             .collect()
     }
@@ -277,6 +335,19 @@ impl LearnedModels {
     /// utility models existed.
     pub fn decode(bytes: &[u8]) -> Result<Self, postcard::Error> {
         postcard::from_bytes::<Self>(bytes).or_else(|e| {
+            if let Ok(v4) = postcard::from_bytes::<ModelsV4>(bytes) {
+                return Ok(LearnedModels {
+                    effects: v4.effects,
+                    rewards: v4.rewards,
+                    transitions: v4.transitions,
+                    perceptions: v4.perceptions,
+                    utilities: v4.utilities,
+                    q_features: v4.q_features,
+                    contexts: v4.contexts,
+                    functions: v4.functions,
+                    ..Default::default()
+                });
+            }
             if let Ok(v3) = postcard::from_bytes::<ModelsV3>(bytes) {
                 return Ok(LearnedModels {
                     effects: v3.effects,
@@ -353,6 +424,12 @@ impl LearnedModels {
                 .filter(|((a, _), _)| a == action)
                 .map(|((_, p), c)| (p.clone(), c.clone()))
                 .collect(),
+            parent_sets: self
+                .parent_sets
+                .iter()
+                .filter(|((a, _), _)| a == action)
+                .map(|((_, p), c)| (p.clone(), c.clone()))
+                .collect(),
         }
     }
 
@@ -363,6 +440,7 @@ impl LearnedModels {
         self.utilities.retain(|(a, _), _| a != action);
         self.q_features.retain(|(a, _), _| a != action);
         self.contexts.retain(|(a, _), _| a != action);
+        self.parent_sets.retain(|(a, _), _| a != action);
         self.rewards.remove(action);
         if let Some(t) = model.reward {
             self.rewards.insert(action.to_string(), t);
@@ -381,6 +459,9 @@ impl LearnedModels {
         }
         for (p, c) in model.contexts {
             self.contexts.insert((action.to_string(), p), c);
+        }
+        for (p, c) in model.parent_sets {
+            self.parent_sets.insert((action.to_string(), p), c);
         }
     }
 }
@@ -650,6 +731,27 @@ impl SigmaEngine {
                 }
                 let (pn, d) = (self.vars[p].schema.name.clone(), self.vars[p].schema.domain_size);
                 let next = self.internal_var(&transition_name(&pn, &an), d)?;
+                // Structure learning found several predicates the transition depends on:
+                // [action, p now, parent 1 now, …, parent k now, p next].
+                if let Some((parents, t)) = self.models.parent_sets.get(&(an.clone(), pn.clone())) {
+                    let qs: Option<Vec<usize>> =
+                        parents.iter().map(|q| self.visible(q).filter(|&q| self.vars[q].range.is_none())).collect();
+                    if let Some(qs) = qs {
+                        let mut shape = vec![2, d];
+                        shape.extend(qs.iter().map(|&q| self.vars[q].schema.domain_size));
+                        shape.push(d);
+                        if t.len() == shape.iter().product::<usize>() {
+                            let mut vars = vec![a, p];
+                            vars.extend(&qs);
+                            vars.push(next);
+                            let mut kinds = vec![PatternKind::Condition; vars.len() - 1];
+                            kinds.push(PatternKind::Condact);
+                            let normal = vars.len() - 1;
+                            b.add(vars, kinds, &shape, t.clone(), Some(normal));
+                            continue;
+                        }
+                    }
+                }
                 // Structure learning found a second predicate the transition depends on: the
                 // model conditions on it too, [action, p now, parent now, p next].
                 if let Some((parent, t)) = self.models.contexts.get(&(an.clone(), pn.clone())) {
@@ -777,6 +879,11 @@ impl SigmaEngine {
                 models.rewards.insert(a, table);
             } else if let Some(p) = target.strip_prefix("@Next(").and_then(|t| t.split('|').next()) {
                 models.effects.insert((a, p.to_string()), table);
+            } else if target.starts_with("@Trans(") && f.vars.len() > 4 {
+                let key = (a, self.vars[f.vars[1]].schema.name.clone());
+                if let Some((_, t)) = models.parent_sets.get_mut(&key) {
+                    *t = table;
+                }
             } else if target.starts_with("@Trans(") && f.vars.len() == 4 {
                 let key = (a, self.vars[f.vars[1]].schema.name.clone());
                 if let Some((_, t)) = models.contexts.get_mut(&key) {
@@ -821,17 +928,18 @@ impl SigmaEngine {
                 }
                 let d = f.table.shape()[1];
                 let key = (self.vars[action].schema.name.clone(), self.vars[p].schema.name.clone());
-                if f.vars.len() == 4 {
-                    // Conditioned on a parent too: learns from the parent's value then.
-                    let q = f.vars[2];
-                    let dq = f.table.shape()[2];
-                    if let Some(xq) = before.get(q).copied().flatten() {
-                        let inbound = vec![
-                            crate::one_hot(1, 2),
-                            crate::one_hot(x0, d),
-                            crate::one_hot(xq, dq),
-                            crate::one_hot(x, d),
-                        ];
+                if f.vars.len() >= 4 {
+                    // Conditioned on parents too: learns from the parents' values then.
+                    let n = f.vars.len();
+                    let parents: Option<Vec<Vec<f32>>> = (2..n - 1)
+                        .map(|s| {
+                            before.get(f.vars[s]).copied().flatten().map(|xq| crate::one_hot(xq, f.table.shape()[s]))
+                        })
+                        .collect();
+                    if let Some(parents) = parents {
+                        let mut inbound = vec![crate::one_hot(1, 2), crate::one_hot(x0, d)];
+                        inbound.extend(parents);
+                        inbound.push(crate::one_hot(x, d));
                         crate::gradient_step(&mut self.factors[fi], &inbound, rate);
                     }
                     // The plain transition model keeps learning beside it.
