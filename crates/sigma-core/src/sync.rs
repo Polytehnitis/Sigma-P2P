@@ -114,6 +114,19 @@ pub mod keys {
         format!("{MODEL}{action}")
     }
 
+    /// A perception model `P(observation | state)`.
+    pub const PERCEPTION: &str = "perception/";
+
+    pub fn perception(observation: &str, state: &str) -> String {
+        format!("{PERCEPTION}{observation}|{state}")
+    }
+
+    /// The `(observation, state)` of a perception key's suffix.
+    pub fn perception_pair(suffix: &str) -> Option<(String, String)> {
+        let (o, s) = suffix.split_once('|')?;
+        (!o.is_empty() && !s.is_empty() && !s.contains('|')).then(|| (o.to_string(), s.to_string()))
+    }
+
     pub fn device(pubkey: &[u8; 32]) -> String {
         format!("{DEVICE}{}", crypto::to_hex(pubkey))
     }

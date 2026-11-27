@@ -263,6 +263,8 @@ struct LastDecision {
     wm: Vec<Option<usize>>,
     goals: Vec<String>,
     impasse: Option<(ImpasseKind, u32)>,
+    /// The state the action was chosen in, for backing up its utility.
+    state: String,
 }
 
 #[derive(Debug, Default)]
@@ -612,11 +614,16 @@ impl SigmaEngine {
     /// One decision cycle: elaboration (message passing to quiescence, subgoaling), then
     /// decision (select an action, or reach a none / tie / no-change impasse).
     pub fn cognitive_cycle(&mut self) -> CycleOutcome {
-        // Memories and models join the graph; the last action's model learns what followed it.
-        self.rebuild_memory_factors();
-        if let Some(a) = self.last.as_ref().and_then(|l| l.action) {
-            self.learn_action_models(a);
+        // The last action's utility is backed up from the reward since and the state it led to.
+        if let Some((a, state)) = self.last.as_ref().and_then(|l| Some((l.action?, l.state.clone()))) {
+            self.back_up_utility(&state, a, self.last_reward);
         }
+        // Memories and models join the graph; the last action's models learn what followed it.
+        self.rebuild_memory_factors();
+        if let Some((a, before)) = self.last.as_ref().and_then(|l| Some((l.action?, l.wm.clone()))) {
+            self.learn_action_models(a, &before);
+        }
+        self.learn_perception_models();
         // Appraise what changed since the last cycle, before elaborating on it.
         let open = self.goal_stack.len();
         let progress = self.pop_satisfied_goals().len() as f32 / open.max(1) as f32;
@@ -660,6 +667,7 @@ impl SigmaEngine {
             wm,
             goals: self.goal_stack.clone(),
             impasse: decision_impasse.as_ref().map(|d| (d.kind, d.cycles)),
+            state: self.state_key(),
         });
 
         let mut active = self.reachable(root).0;
@@ -1151,6 +1159,8 @@ mod tests_mapped;
 mod tests_memory;
 #[cfg(test)]
 mod tests_mind;
+#[cfg(test)]
+mod tests_models;
 #[cfg(test)]
 mod tests_particles;
 #[cfg(test)]

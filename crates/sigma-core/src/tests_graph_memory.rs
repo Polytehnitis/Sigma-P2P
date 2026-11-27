@@ -281,9 +281,9 @@ fn malformed_synced_models_are_ignored() {
         );
         state
     };
-    let nan = ActionModel { reward: Some(vec![f32::NAN; 4]), effects: Default::default() };
-    let huge = ActionModel { reward: None, effects: [("Ready".to_string(), vec![1.0; 3])].into() };
-    let internal = ActionModel { reward: None, effects: [(EPISODE.to_string(), vec![1.0; 4])].into() };
+    let nan = ActionModel { reward: Some(vec![f32::NAN; 4]), ..Default::default() };
+    let huge = ActionModel { effects: [("Ready".to_string(), vec![1.0; 3])].into(), ..Default::default() };
+    let internal = ActionModel { effects: [(EPISODE.to_string(), vec![1.0; 4])].into(), ..Default::default() };
     for model in [nan, huge, internal] {
         assert!(!model.is_valid());
         let report = pc.0.merge_sync_state(phone.1, bad(model)).unwrap();
