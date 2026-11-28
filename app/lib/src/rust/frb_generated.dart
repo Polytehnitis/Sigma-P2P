@@ -111,7 +111,10 @@ abstract class RustLibApi extends BaseApi {
     required double recognitionConfidence,
   });
 
-  Future<void> crateApiSpeechLoadSpeechModel({required String modelPath});
+  Future<void> crateApiSpeechLoadSpeechModel({
+    required String modelPath,
+    required SpeechEngine engine,
+  });
 
   Future<String> crateApiAgentPairDevice({required String code});
 
@@ -480,12 +483,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<void> crateApiSpeechLoadSpeechModel({required String modelPath}) {
+  Future<void> crateApiSpeechLoadSpeechModel({
+    required String modelPath,
+    required SpeechEngine engine,
+  }) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(modelPath, serializer);
+          sse_encode_speech_engine(engine, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -498,7 +505,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiSpeechLoadSpeechModelConstMeta,
-        argValues: [modelPath],
+        argValues: [modelPath, engine],
         apiImpl: this,
       ),
     );
@@ -507,7 +514,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiSpeechLoadSpeechModelConstMeta =>
       const TaskConstMeta(
         debugName: "load_speech_model",
-        argNames: ["modelPath"],
+        argNames: ["modelPath", "engine"],
       );
 
   @override
@@ -1427,6 +1434,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SpeechEngine dco_decode_speech_engine(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return SpeechEngine.values[raw as int];
+  }
+
+  @protected
   SpokenIntent dco_decode_spoken_intent(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -1978,6 +1991,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SpeechEngine sse_decode_speech_engine(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return SpeechEngine.values[inner];
+  }
+
+  @protected
   SpokenIntent sse_decode_spoken_intent(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_kind = sse_decode_intent_kind(deserializer);
@@ -2457,6 +2477,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.skillName, serializer);
     sse_encode_String(self.authorPubkey, serializer);
     sse_encode_f_32(self.reputation, serializer);
+  }
+
+  @protected
+  void sse_encode_speech_engine(SpeechEngine self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected

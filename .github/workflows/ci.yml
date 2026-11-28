@@ -62,10 +62,10 @@ jobs:
       - run: cargo clippy -p sigma-core --features gpu --all-targets -- -D warnings
       - run: cargo test -p sigma-core --features gpu --lib tests_gpu -- --nocapture
 
-  # Real speech through whisper.cpp, on every desktop OS: a known recording, and on Linux a
-  # synthesized "stop" (the word that halts desktop control).
-  whisper:
-    name: whisper.cpp speech (${{ matrix.os }})
+  # Real speech through whisper.cpp (Whisper and Parakeet), on every desktop OS: a known
+  # recording, and on Linux a synthesized "stop" (the word that halts desktop control).
+  speech:
+    name: Speech, whisper.cpp (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -76,18 +76,31 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: whisper-v2
-      - name: Fetch a model and a recording
+          key: speech
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/speech-models
+          key: speech-models-tiny.en-parakeet-v3-q8_0
+      - name: Fetch the models and a recording
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/speech" && cd "$RUNNER_TEMP/speech"
-          curl -sSfL --retry 3 -o ggml-tiny.en.bin \
-            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
-          curl -sSfL --retry 3 -o jfk.wav \
-            https://raw.githubusercontent.com/ggml-org/whisper.cpp/v1.8.3/samples/jfk.wav
-          sum=$( (sha256sum ggml-tiny.en.bin 2>/dev/null || shasum -a 256 ggml-tiny.en.bin) | cut -d' ' -f1)
-          test "$sum" = 921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f
-          echo "SIGMA_WHISPER_MODEL=$RUNNER_TEMP/speech/ggml-tiny.en.bin" >> "$GITHUB_ENV"
+          models="$RUNNER_TEMP/speech-models"
+          mkdir -p "$models" "$RUNNER_TEMP/speech"
+          fetch() { # file url sha256
+            [ -f "$models/$1" ] || curl -sSfL --retry 3 -o "$models/$1" "$2"
+            sum=$( (sha256sum "$models/$1" 2>/dev/null || shasum -a 256 "$models/$1") | cut -d' ' -f1)
+            test "$sum" = "$3" || { echo "$1: checksum $sum"; rm -f "$models/$1"; exit 1; }
+          }
+          fetch ggml-tiny.en.bin \
+            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin \
+            921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f
+          fetch ggml-parakeet-tdt-0.6b-v3-q8_0.bin \
+            https://huggingface.co/ggml-org/parakeet-GGUF/resolve/main/ggml-parakeet-tdt-0.6b-v3-q8_0.bin \
+            4d64e9e96c2792186d072fde0034df0ad670cf680a2f53069052ead827fd600e
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/speech/jfk.wav" \
+            https://raw.githubusercontent.com/ggml-org/whisper.cpp/v1.9.6/samples/jfk.wav
+          echo "SIGMA_WHISPER_MODEL=$models/ggml-tiny.en.bin" >> "$GITHUB_ENV"
+          echo "SIGMA_PARAKEET_MODEL=$models/ggml-parakeet-tdt-0.6b-v3-q8_0.bin" >> "$GITHUB_ENV"
           echo "SIGMA_WHISPER_WAV=$RUNNER_TEMP/speech/jfk.wav" >> "$GITHUB_ENV"
           echo "SIGMA_WHISPER_EXPECT=ask not what your country can do for you" >> "$GITHUB_ENV"
       - if: runner.os == 'Linux'
@@ -98,11 +111,11 @@ jobs:
           espeak-ng -s 140 -w "$RUNNER_TEMP/speech/stop.wav" "Stop."
           echo "SIGMA_WHISPER_WAV=$SIGMA_WHISPER_WAV;$RUNNER_TEMP/speech/stop.wav" >> "$GITHUB_ENV"
           echo "SIGMA_WHISPER_EXPECT=$SIGMA_WHISPER_EXPECT;stop" >> "$GITHUB_ENV"
-      - run: cargo test -p sigma-voice --release -vv -- --include-ignored --nocapture --test-threads=1
+      - run: cargo test -p sigma-voice --release -- --include-ignored --nocapture --test-threads=1
         env:
           SIGMA_WHISPER_BENCH: "1"
-          # The 11 s recording takes under a second on these runners.
-          SIGMA_WHISPER_MAX_SECONDS: "5"
+          # A ceiling for the 11 s recording, to catch a build that lost its optimizations.
+          SIGMA_WHISPER_MAX_SECONDS: "8"
 
   public-relay:
     name: P2P over n0 public relays

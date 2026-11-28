@@ -3,16 +3,21 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 
-/// The on-device speech recognition model: an English Whisper model for whisper.cpp (ggml,
-/// quantized). It is downloaded once, checked against a pinned SHA-256 digest, and then
-/// everything runs offline: audio never leaves the device.
+import '../src/rust/api/speech.dart' show SpeechEngine;
+
+/// The on-device speech recognition model for whisper.cpp (ggml, quantized): NVIDIA Parakeet
+/// on desktops, OpenAI Whisper on phones. It is downloaded once, checked against a pinned
+/// SHA-256 digest, and then everything runs offline: audio never leaves the device.
 class SpeechModelSpec {
   const SpeechModelSpec({
+    required this.engine,
     required this.file,
     required this.url,
     required this.sha256,
     required this.bytes,
   });
+
+  final SpeechEngine engine;
 
   /// The model's file name, also its name on disk.
   final String file;
@@ -20,22 +25,25 @@ class SpeechModelSpec {
   final String sha256;
   final int bytes;
 
-  static const _repo =
-      'https://huggingface.co/ggerganov/whisper.cpp/resolve/main';
+  static const _hf = 'https://huggingface.co';
 
-  /// Whisper small (English), 5-bit: much better than base at short commands and accents,
-  /// and fast enough on a desktop CPU.
+  /// Parakeet TDT 0.6B v3, 8-bit: clearly more accurate than Whisper small, and it hears
+  /// 25 European languages. 670 MB, and fast enough on a desktop CPU.
   static const desktop = SpeechModelSpec(
-    file: 'ggml-small.en-q5_1.bin',
-    url: '$_repo/ggml-small.en-q5_1.bin',
-    sha256: 'bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30',
-    bytes: 190098681,
+    engine: SpeechEngine.parakeet,
+    file: 'ggml-parakeet-tdt-0.6b-v3-q8_0.bin',
+    url:
+        '$_hf/ggml-org/parakeet-GGUF/resolve/main/ggml-parakeet-tdt-0.6b-v3-q8_0.bin',
+    sha256: '4d64e9e96c2792186d072fde0034df0ad670cf680a2f53069052ead827fd600e',
+    bytes: 668757119,
   );
 
-  /// Whisper base (English), 5-bit: a third of the size and CPU of small, for phones.
+  /// Whisper base (English), 5-bit: 60 MB and light on CPU, for phones. Whisper also leans
+  /// towards Sigma's own words (its prompt).
   static const mobile = SpeechModelSpec(
+    engine: SpeechEngine.whisper,
     file: 'ggml-base.en-q5_1.bin',
-    url: '$_repo/ggml-base.en-q5_1.bin',
+    url: '$_hf/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin',
     sha256: '4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f',
     bytes: 59721011,
   );
@@ -81,16 +89,18 @@ class SpeechModelStore {
     }
   }
 
-  /// Earlier versions used a sherpa-onnx model; it is no longer needed.
+  /// Other speech models in [root] (from earlier versions) are no longer needed.
   void _forgetOldModels() {
     for (final e in root.listSync()) {
       final name = e.path.split(Platform.pathSeparator).last.split('/').last;
-      if (e is Directory && name.startsWith('sherpa-onnx-')) {
-        try {
-          e.deleteSync(recursive: true);
-        } on FileSystemException {
-          // Best effort: it only takes space.
-        }
+      final old =
+          (e is Directory && name.startsWith('sherpa-onnx-')) ||
+          (e is File && name.startsWith('ggml-') && name != spec.file);
+      if (!old) continue;
+      try {
+        e.deleteSync(recursive: true);
+      } on FileSystemException {
+        // Best effort: it only takes space.
       }
     }
   }

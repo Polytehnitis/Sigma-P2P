@@ -7,13 +7,18 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-/// Loads the whisper model at `model_path` (a ggml `.bin`), once; later calls with the same path
-/// do nothing. Takes a moment: it reads the whole file.
-Future<void> loadSpeechModel({required String modelPath}) =>
-    RustLib.instance.api.crateApiSpeechLoadSpeechModel(modelPath: modelPath);
+/// Loads the speech model at `model_path` (a ggml `.bin` of `engine`), once; later calls with
+/// the same path do nothing. Takes a moment: it reads the whole file and runs the model once.
+Future<void> loadSpeechModel({
+  required String modelPath,
+  required SpeechEngine engine,
+}) => RustLib.instance.api.crateApiSpeechLoadSpeechModel(
+  modelPath: modelPath,
+  engine: engine,
+);
 
 /// Transcribes one utterance: 16 kHz mono samples in [-1, 1]. Recognition leans towards
-/// Sigma's commands, the user's taught phrases and the agent's own predicates.
+/// Sigma's commands, the user's taught phrases and the agent's own predicates (Whisper only).
 Future<HeardSpeech> transcribeSpeech({required List<double> samples}) =>
     RustLib.instance.api.crateApiSpeechTranscribeSpeech(samples: samples);
 
@@ -37,4 +42,13 @@ class HeardSpeech {
           runtimeType == other.runtimeType &&
           text == other.text &&
           confidence == other.confidence;
+}
+
+/// Which model family a speech model file holds.
+enum SpeechEngine {
+  /// OpenAI Whisper: smaller, and leans towards Sigma's own words.
+  whisper,
+
+  /// NVIDIA Parakeet TDT: more accurate, larger.
+  parakeet,
 }

@@ -1,10 +1,16 @@
 [package]
 name = "sigma-voice"
-description = "On-device speech recognition for Sigma (whisper.cpp)"
+description = "On-device speech recognition for Sigma (whisper.cpp: Whisper and Parakeet)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+build = "build.rs"
+# The vendored whisper.cpp keeps only what Sigma builds.
+include = ["src/**", "tests/**", "csrc/**", "whisper.cpp/**", "build.rs", "Cargo.toml"]
 
 [dependencies]
-whisper-rs = "0.16"
 anyhow.workspace = true
+
+[build-dependencies]
+cmake = "0.1"
+cc = "1"

@@ -41,16 +41,22 @@ typedef Transcriber = Future<({String text, double confidence})> Function(
   Float32List samples,
 );
 
-/// On-device recognition with whisper.cpp (in the Rust core): the microphone (16 kHz mono
-/// PCM) is recorded until the user stops speaking, then the whole utterance is transcribed.
+/// On-device recognition with whisper.cpp (in the Rust core, Parakeet or Whisper): the
+/// microphone (16 kHz mono PCM) is recorded until the user stops speaking, then the whole
+/// utterance is transcribed.
 /// No audio or text leaves the device.
-class WhisperSpeechInput implements SpeechInput {
-  WhisperSpeechInput(
+class OnDeviceSpeechInput implements SpeechInput {
+  OnDeviceSpeechInput(
     this.model, {
     Future<void> Function(String modelPath)? load,
     Transcriber? transcribe,
     AudioRecorder? recorder,
-  }) : _load = load ?? ((path) => rust.loadSpeechModel(modelPath: path)),
+  }) : _load =
+           load ??
+           ((path) => rust.loadSpeechModel(
+             modelPath: path,
+             engine: model.spec.engine,
+           )),
        _transcribe = transcribe ?? _rustTranscribe,
        _recorder = recorder ?? AudioRecorder();
 

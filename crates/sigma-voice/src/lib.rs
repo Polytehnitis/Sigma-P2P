@@ -1,27 +1,66 @@
-//! On-device speech recognition with [whisper.cpp](https://github.com/ggml-org/whisper.cpp).
+//! On-device speech recognition with [whisper.cpp](https://github.com/ggml-org/whisper.cpp),
+//! vendored in `whisper.cpp/` and built from source: OpenAI's Whisper, or NVIDIA's Parakeet
+//! TDT (more accurate, larger).
 //!
 //! The app records one utterance (16 kHz mono), and [`Recognizer::transcribe`] turns it into
-//! text on this device: no audio or text leaves it. whisper.cpp is built from source into the
-//! app (through `whisper-rs`), and runs on the CPU on every platform.
+//! text on this device: no audio or text leaves it. Everything runs on the CPU.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Result};
+use std::ffi::{c_char, c_float, c_int, CStr, CString};
 use std::path::Path;
 use std::sync::{Mutex, Once};
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
 
-/// Samples per second whisper expects.
+/// Samples per second both models expect.
 pub const SAMPLE_RATE: usize = 16_000;
 
 /// Shorter input is padded with silence: whisper.cpp decodes clips under a second poorly.
 const MIN_SAMPLES: usize = SAMPLE_RATE * 11 / 10;
 
-/// whisper reads at most 30 s at a time; an utterance is cut there.
+/// An utterance is cut here (Whisper reads at most 30 s at a time).
 const MAX_SAMPLES: usize = SAMPLE_RATE * 30;
 
-/// Above this, whisper thinks a segment holds no speech (and may have made its text up).
+/// Above this, Whisper thinks a segment holds no speech (and may have made its text up).
 const NO_SPEECH: f32 = 0.6;
 
-/// What was heard, with whisper's own confidence in it.
+/// Longest transcript kept, in bytes.
+const MAX_TEXT: usize = 4096;
+
+#[repr(C)]
+struct SigmaAsr {
+    _private: [u8; 0],
+}
+
+extern "C" {
+    fn sigma_asr_quiet();
+    fn sigma_asr_system_info() -> *const c_char;
+    fn sigma_asr_version() -> *const c_char;
+    fn sigma_asr_load(path: *const c_char, engine: c_int, err: *mut c_char, err_cap: usize) -> *mut SigmaAsr;
+    fn sigma_asr_free(asr: *mut SigmaAsr);
+    #[allow(clippy::too_many_arguments)]
+    fn sigma_asr_transcribe(
+        asr: *mut SigmaAsr,
+        samples: *const c_float,
+        n: c_int,
+        threads: c_int,
+        beam: c_int,
+        prompt: *const c_char,
+        no_speech: c_float,
+        text: *mut c_char,
+        cap: usize,
+        confidence: *mut c_float,
+    ) -> c_int;
+}
+
+/// Which model family a model file holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Engine {
+    /// OpenAI Whisper (`ggml-*.bin`). Takes a hint of likely words.
+    Whisper,
+    /// NVIDIA Parakeet TDT (`ggml-parakeet-*.bin`). More accurate; no hint.
+    Parakeet,
+}
+
+/// What was heard, with the model's own confidence in it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Transcript {
     pub text: String,
@@ -29,28 +68,67 @@ pub struct Transcript {
     pub confidence: f32,
 }
 
-/// A loaded whisper model. Load it once: loading reads the whole model file.
+/// whisper.cpp's version and the CPU features it was built with.
+pub fn system_info() -> String {
+    // SAFETY: both return static NUL-terminated strings.
+    unsafe {
+        format!(
+            "whisper.cpp {}: {}",
+            CStr::from_ptr(sigma_asr_version()).to_string_lossy(),
+            CStr::from_ptr(sigma_asr_system_info()).to_string_lossy()
+        )
+    }
+}
+
+/// The model and its decoding state.
+struct Handle(*mut SigmaAsr);
+
+// SAFETY: whisper.cpp contexts may move between threads; `Recognizer` serializes all use.
+unsafe impl Send for Handle {}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        // SAFETY: the pointer came from `sigma_asr_load` and is freed once.
+        unsafe { sigma_asr_free(self.0) }
+    }
+}
+
+/// A loaded model. Load it once: loading reads the whole model file.
 pub struct Recognizer {
-    ctx: WhisperContext,
-    /// One decoding state, reused between utterances (it holds a few MB of buffers).
-    state: Mutex<WhisperState>,
+    engine: Engine,
+    handle: Mutex<Handle>,
     threads: i32,
     beam: i32,
 }
 
 impl Recognizer {
-    /// Loads a ggml whisper model (e.g. `ggml-small.en-q5_1.bin`).
-    pub fn load(model: &Path) -> Result<Self> {
+    /// Loads a ggml model file of the given engine.
+    pub fn load(model: &Path, engine: Engine) -> Result<Self> {
         static QUIET: Once = Once::new();
-        // Without a log backend this keeps whisper.cpp's progress lines off stderr.
-        QUIET.call_once(whisper_rs::install_logging_hooks);
-        let path = model.to_str().ok_or_else(|| anyhow!("model path is not UTF-8"))?;
-        let ctx = WhisperContext::new_with_params(path, WhisperContextParameters::default())
-            .map_err(|e| anyhow!("{e}"))
-            .with_context(|| format!("loading speech model {}", model.display()))?;
-        let state = ctx.create_state().map_err(|e| anyhow!("speech model state: {e}"))?;
+        // SAFETY: only replaces whisper.cpp's log callbacks with a no-op.
+        QUIET.call_once(|| unsafe { sigma_asr_quiet() });
+        if !model.is_file() {
+            bail!("loading speech model {}: no such file", model.display());
+        }
+        let path = CString::new(model.to_string_lossy().as_bytes())?;
+        let mut err = [0 as c_char; 256];
+        let kind = match engine {
+            Engine::Whisper => 0,
+            Engine::Parakeet => 1,
+        };
+        // SAFETY: valid NUL-terminated path and error buffer of the given size.
+        let handle = unsafe { sigma_asr_load(path.as_ptr(), kind, err.as_mut_ptr(), err.len()) };
+        if handle.is_null() {
+            // SAFETY: the shim wrote a NUL-terminated message.
+            let msg = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().into_owned();
+            bail!("loading speech model {}: {msg}", model.display());
+        }
         let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
-        Ok(Self { ctx, state: Mutex::new(state), threads: default_threads(cores), beam: 5 })
+        Ok(Self { engine, handle: Mutex::new(Handle(handle)), threads: default_threads(cores), beam: 5 })
+    }
+
+    pub fn engine(&self) -> Engine {
+        self.engine
     }
 
     /// Runs the model once on silence. The first transcription is slower (buffers are
@@ -59,88 +137,54 @@ impl Recognizer {
         self.transcribe(&[0.0; MIN_SAMPLES], "").map(|_| ())
     }
 
-    /// CPU threads to use (default: the machine's cores, at most 8).
+    /// CPU threads to use (default: one fewer than the cores, at most 8).
     pub fn set_threads(&mut self, threads: usize) {
         self.threads = threads.clamp(1, 64) as i32;
     }
 
-    /// Beam width (default 5); 1 decodes greedily, which is faster and a little less accurate.
+    /// Whisper's beam width (default 5); 1 decodes greedily, faster and a little less accurate.
+    /// Parakeet always decodes greedily.
     pub fn set_beam_size(&mut self, beam: usize) {
         self.beam = beam.clamp(1, 16) as i32;
     }
 
     /// Transcribes one utterance of 16 kHz mono samples in [-1, 1]. `hint` is a short sentence
-    /// of words the user is likely to say (see `sigma_core::language::recognition_hint`).
+    /// of words the user is likely to say (see `sigma_core::language::recognition_hint`); only
+    /// Whisper uses it.
     pub fn transcribe(&self, samples: &[f32], hint: &str) -> Result<Transcript> {
         let mut audio = samples[..samples.len().min(MAX_SAMPLES)].to_vec();
         if audio.len() < MIN_SAMPLES {
             audio.resize(MIN_SAMPLES, 0.0);
         }
-        // Beam search is worth it for short commands: a few hundred ms more for fewer mishearings.
-        let strategy = if self.beam > 1 {
-            SamplingStrategy::BeamSearch { beam_size: self.beam, patience: -1.0 }
-        } else {
-            SamplingStrategy::Greedy { best_of: 1 }
+        let hint = CString::new(hint.replace('\0', " ")).unwrap_or_default();
+        let mut text = vec![0 as c_char; MAX_TEXT];
+        let mut confidence: c_float = 0.0;
+        let handle = self.handle.lock().unwrap_or_else(|p| p.into_inner());
+        // SAFETY: the handle is live and used by one thread at a time; the buffers are sized
+        // as passed.
+        let status = unsafe {
+            sigma_asr_transcribe(
+                handle.0,
+                audio.as_ptr(),
+                audio.len() as c_int,
+                self.threads,
+                self.beam,
+                hint.as_ptr(),
+                NO_SPEECH,
+                text.as_mut_ptr(),
+                text.len(),
+                &mut confidence,
+            )
         };
-        let mut params = FullParams::new(strategy);
-        params.set_n_threads(self.threads);
-        params.set_language(Some("en"));
-        params.set_translate(false);
-        params.set_no_context(true);
-        params.set_single_segment(true);
-        params.set_no_timestamps(true);
-        params.set_suppress_blank(true);
-        params.set_suppress_nst(true);
-        params.set_print_special(false);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-        if !hint.is_empty() {
-            params.set_initial_prompt(hint);
+        drop(handle);
+        if status != 0 {
+            return Err(anyhow!("speech recognition failed ({status})"));
         }
-
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        state.full(params, &audio).map_err(|e| anyhow!("speech recognition failed: {e}"))?;
-
-        let eot = self.ctx.token_eot();
-        let mut text = String::new();
-        let mut probabilities = Vec::new();
-        for segment in state.as_iter() {
-            if segment.no_speech_probability() > NO_SPEECH {
-                continue;
-            }
-            text.push_str(&segment.to_str_lossy().map_err(|e| anyhow!("{e}"))?);
-            for i in 0..segment.n_tokens() {
-                if let Some(token) = segment.get_token(i) {
-                    // Special tokens (timestamps, end of text, …) come after end-of-text.
-                    if token.token_id() < eot {
-                        probabilities.push(token.token_probability());
-                    }
-                }
-            }
-        }
-        let text = clean(&text);
-        let confidence = if text.is_empty() || probabilities.is_empty() {
-            0.0
-        } else {
-            (probabilities.iter().sum::<f32>() / probabilities.len() as f32).clamp(0.0, 1.0)
-        };
+        // SAFETY: the shim NUL-terminates within the buffer.
+        let raw = unsafe { CStr::from_ptr(text.as_ptr()) }.to_string_lossy().into_owned();
+        let text = clean(&raw);
+        let confidence = if text.is_empty() { 0.0 } else { confidence.clamp(0.0, 1.0) };
         Ok(Transcript { text, confidence })
-    }
-}
-
-impl Recognizer {
-    /// How long the mel spectrogram and the encoder take on `samples` (for benchmarks).
-    #[doc(hidden)]
-    pub fn stage_timings(&self, samples: &[f32]) -> Result<(std::time::Duration, std::time::Duration)> {
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        let threads = self.threads as usize;
-        let started = std::time::Instant::now();
-        state.pcm_to_mel(samples, threads).map_err(|e| anyhow!("{e}"))?;
-        let mel = started.elapsed();
-        let started = std::time::Instant::now();
-        state.encode(0, threads).map_err(|e| anyhow!("{e}"))?;
-        Ok((mel, started.elapsed()))
     }
 }
 

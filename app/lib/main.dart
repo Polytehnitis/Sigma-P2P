@@ -401,7 +401,7 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
     final model = _speechModel;
     if (model == null) return;
     if (!model.installed && !await _installSpeechModel(model)) return;
-    final speech = _speech ??= WhisperSpeechInput(model);
+    final speech = _speech ??= OnDeviceSpeechInput(model);
     setState(() {
       _listening = true;
       _heard = '';

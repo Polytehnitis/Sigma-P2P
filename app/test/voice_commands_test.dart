@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:app/src/rust/api/agent.dart';
 import 'package:app/voice/speech_input.dart';
+import 'package:app/src/rust/api/speech.dart' show SpeechEngine;
 import 'package:app/voice/speech_model.dart';
 import 'package:app/voice/voice_commands.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -149,15 +150,14 @@ void main() {
     final store = SpeechModelStore(dir, spec: SpeechModelSpec.desktop);
     expect(store.installed, isFalse);
     for (final spec in [SpeechModelSpec.desktop, SpeechModelSpec.mobile]) {
-      expect(
-        spec.url,
-        startsWith('https://huggingface.co/ggerganov/whisper.cpp/'),
-      );
+      expect(spec.url, startsWith('https://huggingface.co/'));
       expect(spec.url, endsWith('/${spec.file}'));
       expect(spec.sha256, matches(RegExp(r'^[0-9a-f]{64}$')));
       expect(spec.bytes, greaterThan(10 * 1000 * 1000));
     }
-    expect(store.file.path, endsWith('/ggml-small.en-q5_1.bin'));
+    expect(store.file.path, endsWith('/ggml-parakeet-tdt-0.6b-v3-q8_0.bin'));
+    expect(SpeechModelSpec.desktop.engine, SpeechEngine.parakeet);
+    expect(SpeechModelSpec.mobile.engine, SpeechEngine.whisper);
     // A partial download is not a model.
     File('${store.file.path}.part').writeAsStringSync('half');
     expect(store.installed, isFalse);

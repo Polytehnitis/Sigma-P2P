@@ -160,6 +160,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SkillProvenance dco_decode_skill_provenance(dynamic raw);
 
   @protected
+  SpeechEngine dco_decode_speech_engine(dynamic raw);
+
+  @protected
   SpokenIntent dco_decode_spoken_intent(dynamic raw);
 
   @protected
@@ -339,6 +342,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SkillProvenance sse_decode_skill_provenance(SseDeserializer deserializer);
+
+  @protected
+  SpeechEngine sse_decode_speech_engine(SseDeserializer deserializer);
 
   @protected
   SpokenIntent sse_decode_spoken_intent(SseDeserializer deserializer);
@@ -558,6 +564,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     SkillProvenance self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_speech_engine(SpeechEngine self, SseSerializer serializer);
 
   @protected
   void sse_encode_spoken_intent(SpokenIntent self, SseSerializer serializer);

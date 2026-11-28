@@ -146,7 +146,7 @@ void main() {
     });
   });
 
-  group('WhisperSpeechInput', () {
+  group('OnDeviceSpeechInput', () {
     test(
       'records until silence, then transcribes the whole utterance',
       () async {
@@ -154,7 +154,7 @@ void main() {
         final recorder = FakeRecorder(chunked(audio));
         String? loaded;
         Float32List? sent;
-        final input = WhisperSpeechInput(
+        final input = OnDeviceSpeechInput(
           await installedModel(),
           recorder: recorder,
           load: (path) async => loaded = path,
@@ -164,7 +164,7 @@ void main() {
           },
         );
         final heard = await input.listen().toList();
-        expect(loaded, endsWith('ggml-small.en-q5_1.bin'));
+        expect(loaded, endsWith(SpeechModelSpec.desktop.file));
         expect(heard.first.recognizing, isTrue);
         expect(heard.last.isFinal, isTrue);
         expect(heard.last.text, 'Stop.');
@@ -178,7 +178,7 @@ void main() {
 
     test('nobody speaking never reaches whisper', () async {
       var calls = 0;
-      final input = WhisperSpeechInput(
+      final input = OnDeviceSpeechInput(
         await installedModel(),
         recorder: FakeRecorder(chunked(tone(7000, 0))),
         load: (_) async {},
@@ -194,7 +194,7 @@ void main() {
     });
 
     test('stop while speaking transcribes what was said', () async {
-      final input = WhisperSpeechInput(
+      final input = OnDeviceSpeechInput(
         await installedModel(),
         recorder: FakeRecorder(chunked(tone(3000, 0.2))),
         load: (_) async {},
@@ -210,7 +210,7 @@ void main() {
 
     test('a missing model is an error, not silence', () async {
       final dir = await Directory.systemTemp.createTemp('sigma-speech');
-      final input = WhisperSpeechInput(
+      final input = OnDeviceSpeechInput(
         SpeechModelStore(dir, spec: SpeechModelSpec.desktop),
         recorder: FakeRecorder(const []),
         load: (_) async {},

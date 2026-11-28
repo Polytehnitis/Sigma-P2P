@@ -367,10 +367,11 @@ fn wire__crate__api__speech__load_speech_model_impl(
             };
             let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_model_path = <String>::sse_decode(&mut deserializer);
+            let api_engine = <crate::api::speech::SpeechEngine>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move || {
-                    let output_ok = crate::api::speech::load_speech_model(api_model_path)?;
+                    let output_ok = crate::api::speech::load_speech_model(api_model_path, api_engine)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -1365,6 +1366,18 @@ impl SseDecode for crate::api::agent::SkillProvenance {
     }
 }
 
+impl SseDecode for crate::api::speech::SpeechEngine {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::speech::SpeechEngine::Whisper,
+            1 => crate::api::speech::SpeechEngine::Parakeet,
+            _ => unreachable!("Invalid variant for SpeechEngine: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::api::agent::SpokenIntent {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -1827,6 +1840,22 @@ impl flutter_rust_bridge::IntoDart for crate::api::agent::SkillProvenance {
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::agent::SkillProvenance {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::agent::SkillProvenance> for crate::api::agent::SkillProvenance {
     fn into_into_dart(self) -> crate::api::agent::SkillProvenance {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::speech::SpeechEngine {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Whisper => 0.into_dart(),
+            Self::Parakeet => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::speech::SpeechEngine {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::speech::SpeechEngine> for crate::api::speech::SpeechEngine {
+    fn into_into_dart(self) -> crate::api::speech::SpeechEngine {
         self
     }
 }
@@ -2306,6 +2335,22 @@ impl SseEncode for crate::api::agent::SkillProvenance {
         <String>::sse_encode(self.skill_name, serializer);
         <String>::sse_encode(self.author_pubkey, serializer);
         <f32>::sse_encode(self.reputation, serializer);
+    }
+}
+
+impl SseEncode for crate::api::speech::SpeechEngine {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::speech::SpeechEngine::Whisper => 0,
+                crate::api::speech::SpeechEngine::Parakeet => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 

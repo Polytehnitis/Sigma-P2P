@@ -5,7 +5,7 @@
 //! SIGMA_WHISPER_EXPECT="ask not what your country" cargo test -p sigma-voice -- --ignored
 //! ```
 
-use sigma_voice::{Recognizer, SAMPLE_RATE};
+use sigma_voice::{Engine, Recognizer, SAMPLE_RATE};
 use std::path::PathBuf;
 
 /// Samples of a 16-bit PCM mono WAV, resampled to 16 kHz.
@@ -62,72 +62,99 @@ fn words(text: &str) -> String {
         .join(" ")
 }
 
+/// The models given: `SIGMA_WHISPER_MODEL` and/or `SIGMA_PARAKEET_MODEL`.
+fn models() -> Vec<(PathBuf, Engine)> {
+    let mut models = Vec::new();
+    if let Ok(m) = std::env::var("SIGMA_WHISPER_MODEL") {
+        models.push((PathBuf::from(m), Engine::Whisper));
+    }
+    if let Ok(m) = std::env::var("SIGMA_PARAKEET_MODEL") {
+        models.push((PathBuf::from(m), Engine::Parakeet));
+    }
+    assert!(!models.is_empty(), "set SIGMA_WHISPER_MODEL or SIGMA_PARAKEET_MODEL");
+    models
+}
+
 #[test]
-#[ignore = "needs SIGMA_WHISPER_MODEL, SIGMA_WHISPER_WAV and SIGMA_WHISPER_EXPECT"]
+#[ignore = "needs a model (SIGMA_WHISPER_MODEL / SIGMA_PARAKEET_MODEL), SIGMA_WHISPER_WAV and SIGMA_WHISPER_EXPECT"]
 fn transcribes_a_recording() {
-    let model = PathBuf::from(std::env::var("SIGMA_WHISPER_MODEL").expect("SIGMA_WHISPER_MODEL"));
     let wavs = std::env::var("SIGMA_WHISPER_WAV").expect("SIGMA_WHISPER_WAV");
     let expects = std::env::var("SIGMA_WHISPER_EXPECT").expect("SIGMA_WHISPER_EXPECT");
-    let recognizer = Recognizer::load(&model).expect("load model");
-    recognizer.warm_up().expect("warm up");
     // A ceiling for one recording, to catch a build that lost its optimizations.
     let max = std::env::var("SIGMA_WHISPER_MAX_SECONDS").ok().and_then(|s| s.parse::<f64>().ok());
-    println!("whisper.cpp {}: {}", whisper_rs::get_whisper_version(), whisper_rs::print_system_info());
-    // Several recordings may be given, separated by `;`, each with its expected words.
-    for (wav, expect) in wavs.split(';').zip(expects.split(';')) {
-        let samples = read_wav(&PathBuf::from(wav));
-        let started = std::time::Instant::now();
-        let heard = recognizer.transcribe(&samples, "Sigma, stop, cancel, undo that, yes, no.").expect("transcribe");
-        println!("{wav}: {:?} (confidence {:.2}) in {:?}", heard.text, heard.confidence, started.elapsed());
-        assert!(words(&heard.text).contains(&words(expect)), "{wav}: heard {:?}, expected {expect:?}", heard.text);
-        assert!(heard.confidence > 0.3, "{wav}: confidence {}", heard.confidence);
-        if let Some(max) = max {
+    println!("{}", sigma_voice::system_info());
+    for (model, engine) in models() {
+        let recognizer = Recognizer::load(&model, engine).expect("load model");
+        recognizer.warm_up().expect("warm up");
+        // Several recordings may be given, separated by `;`, each with its expected words.
+        for (wav, expect) in wavs.split(';').zip(expects.split(';')) {
+            let samples = read_wav(&PathBuf::from(wav));
+            let started = std::time::Instant::now();
+            let heard =
+                recognizer.transcribe(&samples, "Sigma, stop, cancel, undo that, yes, no.").expect("transcribe");
             let took = started.elapsed().as_secs_f64();
-            assert!(took <= max, "{wav}: took {took:.1} s, more than {max} s");
+            println!("{engine:?} {wav}: {:?} (confidence {:.2}) in {took:.2} s", heard.text, heard.confidence);
+            assert!(
+                words(&heard.text).contains(&words(expect)),
+                "{engine:?} {wav}: heard {:?}, expected {expect:?}",
+                heard.text
+            );
+            assert!(heard.confidence > 0.3, "{engine:?} {wav}: confidence {}", heard.confidence);
+            if let Some(max) = max {
+                assert!(took <= max, "{engine:?} {wav}: took {took:.1} s, more than {max} s");
+            }
         }
     }
 }
 
 #[test]
-#[ignore = "needs SIGMA_WHISPER_MODEL"]
+#[ignore = "needs a model (SIGMA_WHISPER_MODEL / SIGMA_PARAKEET_MODEL)"]
 fn silence_is_nothing() {
-    let model = PathBuf::from(std::env::var("SIGMA_WHISPER_MODEL").expect("SIGMA_WHISPER_MODEL"));
-    let recognizer = Recognizer::load(&model).expect("load model");
-    let heard = recognizer.transcribe(&vec![0.0; SAMPLE_RATE * 2], "Sigma, stop, cancel.").expect("transcribe");
-    assert_eq!(heard.text, "", "heard {heard:?} in silence");
+    for (model, engine) in models() {
+        let recognizer = Recognizer::load(&model, engine).expect("load model");
+        let heard = recognizer.transcribe(&vec![0.0; SAMPLE_RATE * 2], "Sigma, stop, cancel.").expect("transcribe");
+        assert_eq!(heard.text, "", "{engine:?} heard {heard:?} in silence");
+    }
 }
 
 #[test]
 fn a_missing_model_is_an_error() {
-    let err = Recognizer::load(std::path::Path::new("no-such-model.bin")).err().expect("must fail");
+    let err = Recognizer::load(std::path::Path::new("no-such-model.bin"), Engine::Whisper).err().expect("must fail");
     assert!(format!("{err:#}").contains("no-such-model.bin"), "{err:#}");
+}
+
+#[test]
+fn a_file_that_is_not_a_model_is_an_error() {
+    let path = std::env::temp_dir().join("sigma-voice-not-a-model.bin");
+    std::fs::write(&path, b"not a model").unwrap();
+    for engine in [Engine::Whisper, Engine::Parakeet] {
+        assert!(Recognizer::load(&path, engine).is_err(), "{engine:?}");
+    }
 }
 
 /// Prints how long each decoding setup takes on this machine (`SIGMA_WHISPER_BENCH=1`).
 #[test]
-#[ignore = "needs SIGMA_WHISPER_MODEL and SIGMA_WHISPER_WAV"]
+#[ignore = "needs a model and SIGMA_WHISPER_WAV"]
 fn benchmark() {
     if std::env::var("SIGMA_WHISPER_BENCH").is_err() {
         return;
     }
-    let model = PathBuf::from(std::env::var("SIGMA_WHISPER_MODEL").expect("SIGMA_WHISPER_MODEL"));
     let wav = std::env::var("SIGMA_WHISPER_WAV").expect("SIGMA_WHISPER_WAV");
     let samples = read_wav(&PathBuf::from(wav.split(';').next().unwrap()));
-    let mut recognizer = Recognizer::load(&model).expect("load model");
-    let started = std::time::Instant::now();
-    recognizer.transcribe(&samples, "").expect("transcribe");
-    println!("bench: first run: {:?}", started.elapsed());
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-    for threads in [1, 2, 4, cores] {
-        for beam in [1, 5] {
-            recognizer.set_threads(threads);
-            recognizer.set_beam_size(beam);
-            let started = std::time::Instant::now();
-            recognizer.transcribe(&samples, "").expect("transcribe");
-            println!("bench: {threads} threads, beam {beam}: {:?}", started.elapsed());
-            if beam == 1 {
-                let (mel, encode) = recognizer.stage_timings(&samples).expect("stages");
-                println!("bench: {threads} threads: mel {mel:?}, encoder {encode:?}");
+    for (model, engine) in models() {
+        let mut recognizer = Recognizer::load(&model, engine).expect("load model");
+        let started = std::time::Instant::now();
+        recognizer.transcribe(&samples, "").expect("transcribe");
+        println!("bench {engine:?}: first run: {:?}", started.elapsed());
+        let beams: &[usize] = if engine == Engine::Whisper { &[1, 5] } else { &[1] };
+        for threads in [1, 2, 4, cores] {
+            for &beam in beams {
+                recognizer.set_threads(threads);
+                recognizer.set_beam_size(beam);
+                let started = std::time::Instant::now();
+                recognizer.transcribe(&samples, "").expect("transcribe");
+                println!("bench {engine:?}: {threads} threads, beam {beam}: {:?}", started.elapsed());
             }
         }
     }
