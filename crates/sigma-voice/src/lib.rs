@@ -123,6 +123,21 @@ impl Recognizer {
     }
 }
 
+impl Recognizer {
+    /// How long the mel spectrogram and the encoder take on `samples` (for benchmarks).
+    #[doc(hidden)]
+    pub fn stage_timings(&self, samples: &[f32]) -> Result<(std::time::Duration, std::time::Duration)> {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let threads = self.threads as usize;
+        let started = std::time::Instant::now();
+        state.pcm_to_mel(samples, threads).map_err(|e| anyhow!("{e}"))?;
+        let mel = started.elapsed();
+        let started = std::time::Instant::now();
+        state.encode(0, threads).map_err(|e| anyhow!("{e}"))?;
+        Ok((mel, started.elapsed()))
+    }
+}
+
 /// What whisper writes for sounds that are not words, and says when it hears nothing.
 /// ("Thank you" alone is one of them, but it is also feedback, so it stays: the app only sends
 /// audio in which it heard someone speak.)

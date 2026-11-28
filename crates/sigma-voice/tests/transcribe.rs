@@ -118,6 +118,10 @@ fn benchmark() {
             let started = std::time::Instant::now();
             recognizer.transcribe(&samples, "").expect("transcribe");
             println!("bench: {threads} threads, beam {beam}: {:?}", started.elapsed());
+            if beam == 1 {
+                let (mel, encode) = recognizer.stage_timings(&samples).expect("stages");
+                println!("bench: {threads} threads: mel {mel:?}, encoder {encode:?}");
+            }
         }
     }
 }

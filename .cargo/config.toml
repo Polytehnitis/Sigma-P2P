@@ -1,0 +1,11 @@
+# whisper.cpp (sigma-voice) reads GGML_* variables as CMake options.
+#
+# Build for any x86-64 CPU from the last decade (AVX2, FMA, F16C) instead of only the CPU
+# that compiles it: a build made on a PC with AVX-512 must not crash on one without. ARM
+# builds ignore the x86 options and use the compiler's default CPU for the target.
+[env]
+GGML_NATIVE = "OFF"
+GGML_AVX = "ON"
+GGML_AVX2 = "ON"
+GGML_FMA = "ON"
+GGML_F16C = "ON"
