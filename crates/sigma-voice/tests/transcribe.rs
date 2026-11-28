@@ -27,7 +27,7 @@ fn read_wav(path: &PathBuf) -> Vec<f32> {
         } else if id == b"data" {
             let Some((1, rate, 16)) = format else { panic!("need mono 16-bit PCM, got {format:?}") };
             let pcm: Vec<f32> =
-                body.chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]]) as f32 / 32768.0).collect();
+                body.as_chunks::<2>().0.iter().map(|s| i16::from_le_bytes(*s) as f32 / 32768.0).collect();
             return resample(&pcm, rate as usize);
         }
         at += 8 + len + (len & 1);
@@ -69,6 +69,7 @@ fn transcribes_a_recording() {
     let wavs = std::env::var("SIGMA_WHISPER_WAV").expect("SIGMA_WHISPER_WAV");
     let expects = std::env::var("SIGMA_WHISPER_EXPECT").expect("SIGMA_WHISPER_EXPECT");
     let recognizer = Recognizer::load(&model).expect("load model");
+    println!("whisper.cpp {}: {}", whisper_rs::get_whisper_version(), whisper_rs::print_system_info());
     // Several recordings may be given, separated by `;`, each with its expected words.
     for (wav, expect) in wavs.split(';').zip(expects.split(';')) {
         let samples = read_wav(&PathBuf::from(wav));
