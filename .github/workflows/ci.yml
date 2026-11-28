@@ -88,7 +88,8 @@ jobs:
           mkdir -p "$models" "$RUNNER_TEMP/speech"
           fetch() { # file url sha256
             [ -f "$models/$1" ] || curl -sSfL --retry 3 -o "$models/$1" "$2"
-            sum=$( (sha256sum "$models/$1" 2>/dev/null || shasum -a 256 "$models/$1") | cut -d' ' -f1)
+            # (sha256sum prefixes a backslash when the path has one, as on Windows.)
+            sum=$( (sha256sum "$models/$1" 2>/dev/null || shasum -a 256 "$models/$1") | cut -d' ' -f1 | tr -d '\\')
             test "$sum" = "$3" || { echo "$1: checksum $sum"; rm -f "$models/$1"; exit 1; }
           }
           fetch ggml-tiny.en.bin \
