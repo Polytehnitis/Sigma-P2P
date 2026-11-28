@@ -35,6 +35,7 @@ pub struct Recognizer {
     /// One decoding state, reused between utterances (it holds a few MB of buffers).
     state: Mutex<WhisperState>,
     threads: i32,
+    beam: i32,
 }
 
 impl Recognizer {
@@ -49,7 +50,17 @@ impl Recognizer {
             .with_context(|| format!("loading speech model {}", model.display()))?;
         let state = ctx.create_state().map_err(|e| anyhow!("speech model state: {e}"))?;
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8) as i32;
-        Ok(Self { ctx, state: Mutex::new(state), threads })
+        Ok(Self { ctx, state: Mutex::new(state), threads, beam: 5 })
+    }
+
+    /// CPU threads to use (default: the machine's cores, at most 8).
+    pub fn set_threads(&mut self, threads: usize) {
+        self.threads = threads.clamp(1, 64) as i32;
+    }
+
+    /// Beam width (default 5); 1 decodes greedily, which is faster and a little less accurate.
+    pub fn set_beam_size(&mut self, beam: usize) {
+        self.beam = beam.clamp(1, 16) as i32;
     }
 
     /// Transcribes one utterance of 16 kHz mono samples in [-1, 1]. `hint` is a short sentence
@@ -60,7 +71,12 @@ impl Recognizer {
             audio.resize(MIN_SAMPLES, 0.0);
         }
         // Beam search is worth it for short commands: a few hundred ms more for fewer mishearings.
-        let mut params = FullParams::new(SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 });
+        let strategy = if self.beam > 1 {
+            SamplingStrategy::BeamSearch { beam_size: self.beam, patience: -1.0 }
+        } else {
+            SamplingStrategy::Greedy { best_of: 1 }
+        };
+        let mut params = FullParams::new(strategy);
         params.set_n_threads(self.threads);
         params.set_language(Some("en"));
         params.set_translate(false);

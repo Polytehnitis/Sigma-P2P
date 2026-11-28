@@ -95,3 +95,26 @@ fn a_missing_model_is_an_error() {
     let err = Recognizer::load(std::path::Path::new("no-such-model.bin")).err().expect("must fail");
     assert!(format!("{err:#}").contains("no-such-model.bin"), "{err:#}");
 }
+
+/// Prints how long each decoding setup takes on this machine (`SIGMA_WHISPER_BENCH=1`).
+#[test]
+#[ignore = "needs SIGMA_WHISPER_MODEL and SIGMA_WHISPER_WAV"]
+fn benchmark() {
+    if std::env::var("SIGMA_WHISPER_BENCH").is_err() {
+        return;
+    }
+    let model = PathBuf::from(std::env::var("SIGMA_WHISPER_MODEL").expect("SIGMA_WHISPER_MODEL"));
+    let wav = std::env::var("SIGMA_WHISPER_WAV").expect("SIGMA_WHISPER_WAV");
+    let samples = read_wav(&PathBuf::from(wav.split(';').next().unwrap()));
+    let mut recognizer = Recognizer::load(&model).expect("load model");
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    for threads in [1, 2, 4, cores] {
+        for beam in [1, 5] {
+            recognizer.set_threads(threads);
+            recognizer.set_beam_size(beam);
+            let started = std::time::Instant::now();
+            recognizer.transcribe(&samples, "").expect("transcribe");
+            println!("bench: {threads} threads, beam {beam}: {:?}", started.elapsed());
+        }
+    }
+}
