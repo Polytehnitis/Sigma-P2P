@@ -69,6 +69,9 @@ fn transcribes_a_recording() {
     let wavs = std::env::var("SIGMA_WHISPER_WAV").expect("SIGMA_WHISPER_WAV");
     let expects = std::env::var("SIGMA_WHISPER_EXPECT").expect("SIGMA_WHISPER_EXPECT");
     let recognizer = Recognizer::load(&model).expect("load model");
+    recognizer.warm_up().expect("warm up");
+    // A ceiling for one recording, to catch a build that lost its optimizations.
+    let max = std::env::var("SIGMA_WHISPER_MAX_SECONDS").ok().and_then(|s| s.parse::<f64>().ok());
     println!("whisper.cpp {}: {}", whisper_rs::get_whisper_version(), whisper_rs::print_system_info());
     // Several recordings may be given, separated by `;`, each with its expected words.
     for (wav, expect) in wavs.split(';').zip(expects.split(';')) {
@@ -78,6 +81,10 @@ fn transcribes_a_recording() {
         println!("{wav}: {:?} (confidence {:.2}) in {:?}", heard.text, heard.confidence, started.elapsed());
         assert!(words(&heard.text).contains(&words(expect)), "{wav}: heard {:?}, expected {expect:?}", heard.text);
         assert!(heard.confidence > 0.3, "{wav}: confidence {}", heard.confidence);
+        if let Some(max) = max {
+            let took = started.elapsed().as_secs_f64();
+            assert!(took <= max, "{wav}: took {took:.1} s, more than {max} s");
+        }
     }
 }
 

@@ -9,3 +9,12 @@ GGML_AVX = "ON"
 GGML_AVX2 = "ON"
 GGML_FMA = "ON"
 GGML_F16C = "ON"
+
+# On Windows the cmake crate replaces CMake's Release flags (and with them /O2) by the C
+# compiler flags of the build script, which carry no optimization: whisper.cpp then ran
+# ~20x slower than on Linux. These flags reach those variables through the cc crate, and
+# only for MSVC targets.
+CFLAGS_x86_64_pc_windows_msvc = "-O2 -Ob2 -DNDEBUG"
+CXXFLAGS_x86_64_pc_windows_msvc = "-O2 -Ob2 -DNDEBUG"
+CFLAGS_aarch64_pc_windows_msvc = "-O2 -Ob2 -DNDEBUG"
+CXXFLAGS_aarch64_pc_windows_msvc = "-O2 -Ob2 -DNDEBUG"

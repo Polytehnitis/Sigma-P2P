@@ -18,13 +18,14 @@ pub struct HeardSpeech {
 }
 
 /// Loads the whisper model at `model_path` (a ggml `.bin`), once; later calls with the same path
-/// do nothing. Takes a moment: it reads the whole file.
+/// do nothing. Takes a moment: it reads the whole file and runs the model once.
 pub fn load_speech_model(model_path: String) -> Result<()> {
     let path = PathBuf::from(model_path);
     if RECOGNIZER.lock().unwrap().as_ref().is_some_and(|(p, _)| *p == path) {
         return Ok(());
     }
     let recognizer = Arc::new(Recognizer::load(&path)?);
+    recognizer.warm_up()?;
     *RECOGNIZER.lock().unwrap() = Some((path, recognizer));
     Ok(())
 }

@@ -49,8 +49,14 @@ impl Recognizer {
             .map_err(|e| anyhow!("{e}"))
             .with_context(|| format!("loading speech model {}", model.display()))?;
         let state = ctx.create_state().map_err(|e| anyhow!("speech model state: {e}"))?;
-        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8) as i32;
-        Ok(Self { ctx, state: Mutex::new(state), threads, beam: 5 })
+        let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+        Ok(Self { ctx, state: Mutex::new(state), threads: default_threads(cores), beam: 5 })
+    }
+
+    /// Runs the model once on silence. The first transcription is slower (buffers are
+    /// allocated, weights repacked); after this the user's first command is not.
+    pub fn warm_up(&self) -> Result<()> {
+        self.transcribe(&[0.0; MIN_SAMPLES], "").map(|_| ())
     }
 
     /// CPU threads to use (default: the machine's cores, at most 8).
@@ -138,6 +144,13 @@ impl Recognizer {
     }
 }
 
+/// whisper.cpp's threads spin while they wait for each other, so more threads than free cores
+/// is much slower, not a little (in CI: 4 threads on 3 cores took 20x as long). Leave one
+/// core for the app itself, and stop at 8, past which whisper gains little.
+fn default_threads(cores: usize) -> i32 {
+    cores.saturating_sub(1).clamp(1, 8) as i32
+}
+
 /// What whisper writes for sounds that are not words, and says when it hears nothing.
 /// ("Thank you" alone is one of them, but it is also feedback, so it stays: the app only sends
 /// audio in which it heard someone speak.)
@@ -179,7 +192,15 @@ pub fn clean(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::clean;
+    use super::{clean, default_threads};
+
+    #[test]
+    fn leaves_a_core_free() {
+        assert_eq!(default_threads(1), 1);
+        assert_eq!(default_threads(2), 1);
+        assert_eq!(default_threads(4), 3);
+        assert_eq!(default_threads(32), 8);
+    }
 
     #[test]
     fn keeps_words() {
