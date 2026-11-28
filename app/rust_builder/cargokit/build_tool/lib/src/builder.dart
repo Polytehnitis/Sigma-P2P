@@ -100,7 +100,7 @@ class BuildEnvironment {
     return BuildEnvironment(
       configuration: buildConfiguration,
       crateOptions: crateOptions,
-      targetTempDir: Environment.targetTempDir,
+      targetTempDir: _shortOnWindows(Environment.targetTempDir),
       manifestDir: manifestDir,
       crateInfo: crateInfo,
       isAndroid: isAndroid,
@@ -258,4 +258,19 @@ class RustBuilder {
       'AR_${target.rust}': path.join(sdkPath, 'llvm', 'bin', 'llvm-ar$exe'),
     };
   }
+}
+
+/// Sigma: whisper.cpp's CMake build nests deep paths (MSBuild's `.tlog` files) under the
+/// cargo target directory. Under the Flutter build folder they pass Windows' 260-character
+/// limit, so on Windows cargo builds in a short folder under %LOCALAPPDATA% instead, one per
+/// project (named by a hash of the original folder).
+String _shortOnWindows(String dir) {
+  final local = Platform.environment['LOCALAPPDATA'];
+  if (!Platform.isWindows || local == null || local.isEmpty) return dir;
+  // FNV-1a, 32 bits: stable across runs, and needs no package.
+  var h = 0x811c9dc5;
+  for (final c in path.normalize(dir).toLowerCase().codeUnits) {
+    h = ((h ^ c) * 0x01000193) & 0xffffffff;
+  }
+  return path.join(local, 'sigma-cargo', h.toRadixString(16).padLeft(8, '0'));
 }

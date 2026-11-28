@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -317861680;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1325607693;
 
 // Section: executor
 
@@ -343,6 +343,35 @@ fn wire__crate__api__agent__interpret_utterance_impl(
             move |context| {
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move || {
                     let output_ok = crate::api::agent::interpret_utterance(api_text, api_recognition_confidence)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__speech__load_speech_model_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "load_speech_model",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_)
+            };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_model_path = <String>::sse_decode(&mut deserializer);
+            let api_engine = <crate::api::speech::SpeechEngine>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move || {
+                    let output_ok = crate::api::speech::load_speech_model(api_model_path, api_engine)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -713,6 +742,34 @@ fn wire__crate__api__agent__teach_phrase_impl(
         },
     )
 }
+fn wire__crate__api__speech__transcribe_speech_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "transcribe_speech",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_)
+            };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_samples = <Vec<f32>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>((move || {
+                    let output_ok = crate::api::speech::transcribe_speech(api_samples)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__agent__trust_peer_author_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1019,6 +1076,15 @@ impl SseDecode for crate::api::agent::FeedbackResult {
     }
 }
 
+impl SseDecode for crate::api::speech::HeardSpeech {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_text = <String>::sse_decode(deserializer);
+        let mut var_confidence = <f32>::sse_decode(deserializer);
+        return crate::api::speech::HeardSpeech { text: var_text, confidence: var_confidence };
+    }
+}
+
 impl SseDecode for i32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -1300,6 +1366,18 @@ impl SseDecode for crate::api::agent::SkillProvenance {
     }
 }
 
+impl SseDecode for crate::api::speech::SpeechEngine {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::speech::SpeechEngine::Whisper,
+            1 => crate::api::speech::SpeechEngine::Parakeet,
+            _ => unreachable!("Invalid variant for SpeechEngine: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::api::agent::SpokenIntent {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -1365,22 +1443,24 @@ fn pde_ffi_dispatcher_primary_impl(
         9 => wire__crate__api__agent__init_agent_impl(port, ptr, rust_vec_len, data_len),
         10 => wire__crate__api__agent__init_app_impl(port, ptr, rust_vec_len, data_len),
         11 => wire__crate__api__agent__interpret_utterance_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__agent__pair_device_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__agent__paired_devices_impl(port, ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__agent__perceive_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__agent__provide_feedback_impl(port, ptr, rust_vec_len, data_len),
-        16 => wire__crate__api__agent__run_cognitive_step_impl(port, ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__agent__set_action_rules_impl(port, ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__agent__set_desktop_control_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__agent__set_screen_perception_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__agent__stop_desktop_control_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__agent__sync_now_impl(port, ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__agent__taught_phrases_impl(port, ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__agent__teach_and_share_skill_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__agent__teach_phrase_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__agent__trust_peer_author_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__agent__undo_last_action_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__agent__unpair_device_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__speech__load_speech_model_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__agent__pair_device_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__agent__paired_devices_impl(port, ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__agent__perceive_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__agent__provide_feedback_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__agent__run_cognitive_step_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__agent__set_action_rules_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__agent__set_desktop_control_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__agent__set_screen_perception_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__agent__stop_desktop_control_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__agent__sync_now_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__agent__taught_phrases_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__agent__teach_and_share_skill_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__agent__teach_phrase_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__speech__transcribe_speech_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__agent__trust_peer_author_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__agent__undo_last_action_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__agent__unpair_device_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1626,6 +1706,18 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::agent::FeedbackResult> for cr
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::speech::HeardSpeech {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.text.into_into_dart().into_dart(), self.confidence.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::speech::HeardSpeech {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::speech::HeardSpeech> for crate::api::speech::HeardSpeech {
+    fn into_into_dart(self) -> crate::api::speech::HeardSpeech {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::agent::IntentKind {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
@@ -1748,6 +1840,22 @@ impl flutter_rust_bridge::IntoDart for crate::api::agent::SkillProvenance {
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::agent::SkillProvenance {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::agent::SkillProvenance> for crate::api::agent::SkillProvenance {
     fn into_into_dart(self) -> crate::api::agent::SkillProvenance {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::speech::SpeechEngine {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Whisper => 0.into_dart(),
+            Self::Parakeet => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::speech::SpeechEngine {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::speech::SpeechEngine> for crate::api::speech::SpeechEngine {
+    fn into_into_dart(self) -> crate::api::speech::SpeechEngine {
         self
     }
 }
@@ -1966,6 +2074,14 @@ impl SseEncode for crate::api::agent::FeedbackResult {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <Vec<crate::api::agent::SkillProvenance>>::sse_encode(self.reputations, serializer);
         <Vec<String>>::sse_encode(self.evicted_skills, serializer);
+    }
+}
+
+impl SseEncode for crate::api::speech::HeardSpeech {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.text, serializer);
+        <f32>::sse_encode(self.confidence, serializer);
     }
 }
 
@@ -2219,6 +2335,22 @@ impl SseEncode for crate::api::agent::SkillProvenance {
         <String>::sse_encode(self.skill_name, serializer);
         <String>::sse_encode(self.author_pubkey, serializer);
         <f32>::sse_encode(self.reputation, serializer);
+    }
+}
+
+impl SseEncode for crate::api::speech::SpeechEngine {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::speech::SpeechEngine::Whisper => 0,
+                crate::api::speech::SpeechEngine::Parakeet => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 

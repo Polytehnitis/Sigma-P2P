@@ -28,8 +28,9 @@ A new Flutter FFI plugin project.
   # Desktop control: enigo (keyboard layouts, events) and xcap (screen capture).
   s.frameworks = 'SystemConfiguration', 'Security', 'Network',
                  'Carbon', 'ApplicationServices', 'CoreGraphics', 'CoreMedia',
-                 'CoreVideo', 'AVFoundation', 'IOSurface'
-  s.libraries = 'resolv'
+                 'CoreVideo', 'AVFoundation', 'IOSurface', 'Accelerate'
+  # whisper.cpp (speech recognition) is C++ and uses Accelerate for matrix maths.
+  s.libraries = 'resolv', 'c++'
 
   s.script_phase = {
     :name => 'Build Rust library',

@@ -2,15 +2,27 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:record/record.dart';
-import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
+import '../src/rust/api/speech.dart' as rust;
+import 'endpointer.dart';
 import 'speech_model.dart';
 
 /// What the recognizer heard so far. `isFinal` marks the end of an utterance.
 class Hearing {
-  const Hearing(this.text, {this.isFinal = false});
+  const Hearing(
+    this.text, {
+    this.isFinal = false,
+    this.confidence = 0,
+    this.recognizing = false,
+  });
   final String text;
   final bool isFinal;
+
+  /// The recognizer's confidence in a final `text`, in [0, 1].
+  final double confidence;
+
+  /// The user stopped speaking and the words are being worked out.
+  final bool recognizing;
 }
 
 /// A source of spoken utterances. One `listen` call hears one utterance.
@@ -24,47 +36,47 @@ abstract class SpeechInput {
   void dispose();
 }
 
-/// Streaming on-device recognition: microphone PCM (16 kHz mono) into a sherpa-onnx
-/// zipformer transducer. No audio or text leaves the device.
-class SherpaSpeechInput implements SpeechInput {
-  SherpaSpeechInput(this.model);
+/// Turns one utterance (16 kHz mono samples) into text with the recognizer's confidence.
+typedef Transcriber = Future<({String text, double confidence})> Function(
+  Float32List samples,
+);
+
+/// On-device recognition with whisper.cpp (in the Rust core, Parakeet or Whisper): the
+/// microphone (16 kHz mono PCM) is recorded until the user stops speaking, then the whole
+/// utterance is transcribed.
+/// No audio or text leaves the device.
+class OnDeviceSpeechInput implements SpeechInput {
+  OnDeviceSpeechInput(
+    this.model, {
+    Future<void> Function(String modelPath)? load,
+    Transcriber? transcribe,
+    AudioRecorder? recorder,
+  }) : _load =
+           load ??
+           ((path) => rust.loadSpeechModel(
+             modelPath: path,
+             engine: model.spec.engine,
+           )),
+       _transcribe = transcribe ?? _rustTranscribe,
+       _recorder = recorder ?? AudioRecorder();
 
   final SpeechModelStore model;
+  final Future<void> Function(String modelPath) _load;
+  final Transcriber _transcribe;
+  final AudioRecorder _recorder;
   static const sampleRate = 16000;
 
-  /// Longest utterance before listening stops on its own.
-  static const maxUtterance = Duration(seconds: 15);
-
-  static bool _bindings = false;
-  sherpa.OnlineRecognizer? _recognizer;
-  final _recorder = AudioRecorder();
+  bool _loaded = false;
   StreamController<Hearing>? _out;
   StreamSubscription<Uint8List>? _mic;
-  sherpa.OnlineStream? _stream;
-  Timer? _timeout;
-  String _heard = '';
+  Endpointer? _endpointer;
+  final _audio = BytesBuilder(copy: false);
 
-  sherpa.OnlineRecognizer _load() {
-    if (!_bindings) {
-      sherpa.initBindings();
-      _bindings = true;
-    }
-    return _recognizer ??= sherpa.OnlineRecognizer(
-      sherpa.OnlineRecognizerConfig(
-        model: sherpa.OnlineModelConfig(
-          transducer: sherpa.OnlineTransducerModelConfig(
-            encoder: model.path('encoder'),
-            decoder: model.path('decoder'),
-            joiner: model.path('joiner'),
-          ),
-          tokens: model.path('tokens'),
-          numThreads: 2,
-          debug: false,
-        ),
-        // An utterance ends after ~0.8 s of silence once something was said.
-        rule2MinTrailingSilence: 0.8,
-      ),
-    );
+  static Future<({String text, double confidence})> _rustTranscribe(
+    Float32List samples,
+  ) async {
+    final h = await rust.transcribeSpeech(samples: samples);
+    return (text: h.text, confidence: h.confidence);
   }
 
   @override
@@ -82,75 +94,75 @@ class SherpaSpeechInput implements SpeechInput {
       if (!await _recorder.hasPermission()) {
         throw const SpeechModelException('Microphone access was denied.');
       }
-      final recognizer = _load();
-      final stream = _stream = recognizer.createStream();
-      _heard = '';
+      if (!_loaded) {
+        await _load(model.file.path);
+        _loaded = true;
+      }
+      _audio.clear();
+      final endpointer = _endpointer = Endpointer(sampleRate: sampleRate);
       final pcm = await _recorder.startStream(
         const RecordConfig(
           encoder: AudioEncoder.pcm16bits,
           sampleRate: sampleRate,
           numChannels: 1,
+          // Whisper is trained on clean speech; the platform's own cleanup helps it.
+          noiseSuppress: true,
+          echoCancel: true,
         ),
       );
-      _timeout = Timer(maxUtterance, stop);
       _mic = pcm.listen((bytes) {
-        stream.acceptWaveform(
-          samples: pcm16ToFloat(bytes),
-          sampleRate: sampleRate,
-        );
-        while (recognizer.isReady(stream)) {
-          recognizer.decode(stream);
+        _audio.add(bytes);
+        switch (endpointer.add(pcm16ToFloat(bytes))) {
+          case Endpoint.listening:
+            break;
+          case Endpoint.spoken || Endpoint.tooLong:
+            stop();
+          case Endpoint.nothing:
+            _finish(transcribe: false);
         }
-        final text = recognizer.getResult(stream).text.trim();
-        if (text != _heard) {
-          _heard = text;
-          out.add(Hearing(text));
-        }
-        if (recognizer.isEndpoint(stream) && _heard.isNotEmpty) stop();
       }, onError: (Object e) => _finish(error: e));
     } catch (e) {
       _finish(error: e);
     }
   }
 
+  /// Ends the utterance now. Tapping stop while speaking still transcribes what was said.
   @override
-  Future<void> stop() async {
-    final stream = _stream;
-    final recognizer = _recognizer;
-    if (stream != null && recognizer != null) {
-      stream.inputFinished();
-      while (recognizer.isReady(stream)) {
-        recognizer.decode(stream);
-      }
-      _heard = recognizer.getResult(stream).text.trim();
-    }
-    await _finish();
-  }
+  Future<void> stop() => _finish(
+    // Or a second of audio: a quiet voice may never have crossed the loudness bar.
+    transcribe:
+        (_endpointer?.heardSpeech ?? false) || _audio.length >= 2 * sampleRate,
+  );
 
-  Future<void> _finish({Object? error}) async {
-    _timeout?.cancel();
-    _timeout = null;
+  Future<void> _finish({Object? error, bool transcribe = false}) async {
+    final out = _out;
+    _out = null;
+    _endpointer = null;
     await _mic?.cancel();
     _mic = null;
     if (await _recorder.isRecording()) await _recorder.stop();
-    _stream?.free();
-    _stream = null;
-    final out = _out;
-    _out = null;
     if (out == null || out.isClosed) return;
-    if (error != null) {
-      out.addError(error);
-    } else {
-      out.add(Hearing(_heard, isFinal: true));
+    try {
+      if (error != null) throw error;
+      var heard = (text: '', confidence: 0.0);
+      if (transcribe) {
+        out.add(const Hearing('', recognizing: true));
+        heard = await _transcribe(pcm16ToFloat(_audio.takeBytes()));
+      }
+      out.add(
+        Hearing(heard.text.trim(), isFinal: true, confidence: heard.confidence),
+      );
+    } catch (e) {
+      out.addError(e);
+    } finally {
+      _audio.clear();
+      await out.close();
     }
-    await out.close();
   }
 
   @override
   void dispose() {
     _finish();
-    _recognizer?.free();
-    _recognizer = null;
     _recorder.dispose();
   }
 }

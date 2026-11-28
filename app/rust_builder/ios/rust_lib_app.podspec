@@ -26,8 +26,9 @@ A new Flutter FFI plugin project.
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386' }
   s.swift_version = '5.0'
   # iroh (netwatch, DNS, proxy discovery) links against these system libraries.
-  s.frameworks = 'SystemConfiguration', 'Security', 'Network'
-  s.libraries = 'resolv'
+  s.frameworks = 'SystemConfiguration', 'Security', 'Network', 'Accelerate'
+  # whisper.cpp (speech recognition) is C++ and uses Accelerate for matrix maths.
+  s.libraries = 'resolv', 'c++'
 
   s.script_phase = {
     :name => 'Build Rust library',

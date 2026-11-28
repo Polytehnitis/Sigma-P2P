@@ -763,6 +763,25 @@ pub fn interpret_utterance(text: String, recognition_confidence: f32) -> Result<
     })
 }
 
+/// What the speech recognizer should lean towards (see `language::recognition_hint`). Works
+/// before the agent starts too, with the command words only.
+#[flutter_rust_bridge::frb(ignore)]
+pub fn recognition_hint() -> String {
+    let Some(a) = AGENT.get() else {
+        return language::recognition_hint(&[], &language::PhraseBook::default());
+    };
+    let predicates: Vec<PredicateSchema> = a
+        .engine
+        .lock()
+        .unwrap()
+        .variables()
+        .iter()
+        .map(|v| v.schema.clone())
+        .filter(|p| !p.name.starts_with('@'))
+        .collect();
+    language::recognition_hint(&predicates, &a.phrases.lock().unwrap())
+}
+
 /// Teaches a phrase so it means `intent` from now on, on all of the user's paired devices.
 /// Returns the phrase as it will be matched (normalized).
 pub fn teach_phrase(phrase: String, intent: SpokenIntent) -> Result<String> {

@@ -76,6 +76,9 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
   SpeechInput? _speech;
   bool _listening = false;
   String _heard = '';
+
+  /// The user stopped speaking; whisper is working out the words.
+  bool _recognizing = false;
   double? _modelProgress;
   String? _lastUtterance;
   List<SpokenIntent> _suggestions = const [];
@@ -398,7 +401,7 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
     final model = _speechModel;
     if (model == null) return;
     if (!model.installed && !await _installSpeechModel(model)) return;
-    final speech = _speech ??= SherpaSpeechInput(model);
+    final speech = _speech ??= OnDeviceSpeechInput(model);
     setState(() {
       _listening = true;
       _heard = '';
@@ -407,18 +410,28 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
     try {
       await for (final h in speech.listen()) {
         if (!mounted) return;
-        setState(() => _heard = h.text);
+        setState(() {
+          _recognizing = h.recognizing;
+          _heard = h.text;
+        });
         if (h.isFinal) {
           setState(() => _listening = false);
-          // The recognizer reports no confidence of its own; speech counts a bit below text.
-          if (h.text.isNotEmpty) await _understand(h.text, 0.9);
+          // Speech never counts quite as much as typed text.
+          if (h.text.isNotEmpty) {
+            await _understand(h.text, h.confidence.clamp(0, 0.95).toDouble());
+          }
           if (h.text.isEmpty) _toast("I didn't hear anything.");
         }
       }
     } catch (e) {
       _toast('$e');
     } finally {
-      if (mounted) setState(() => _listening = false);
+      if (mounted) {
+        setState(() {
+          _listening = false;
+          _recognizing = false;
+        });
+      }
     }
   }
 
@@ -656,6 +669,7 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
       listening: _listening,
       onListen: _info == null ? null : _listen,
       note:
+          (_recognizing ? 'One moment…' : null) ??
           (_listening ? (_heard.isEmpty ? 'Listening…' : '“$_heard”') : null) ??
           (_modelProgress == null
               ? null
@@ -864,7 +878,13 @@ class _AgentPageState extends State<AgentPage> implements VoiceActions {
               if (_listening)
                 ListTile(
                   leading: const Icon(Icons.hearing),
-                  title: Text(_heard.isEmpty ? 'Listening…' : _heard),
+                  title: Text(
+                    _recognizing
+                        ? 'One moment…'
+                        : _heard.isEmpty
+                        ? 'Listening…'
+                        : _heard,
+                  ),
                   subtitle: const Text('Recognized on this device'),
                 ),
               if (_suggestions.isNotEmpty)
