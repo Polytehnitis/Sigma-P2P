@@ -107,6 +107,9 @@ fn benchmark() {
     let wav = std::env::var("SIGMA_WHISPER_WAV").expect("SIGMA_WHISPER_WAV");
     let samples = read_wav(&PathBuf::from(wav.split(';').next().unwrap()));
     let mut recognizer = Recognizer::load(&model).expect("load model");
+    let started = std::time::Instant::now();
+    recognizer.transcribe(&samples, "").expect("transcribe");
+    println!("bench: first run: {:?}", started.elapsed());
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
     for threads in [1, 2, 4, cores] {
         for beam in [1, 5] {
