@@ -326,6 +326,11 @@ pub fn name_words(name: &str) -> Vec<String> {
 
 /// The content words of a predicate name, its role prefix dropped (`GoalBackup` -> ["backup"]).
 fn predicate_words(p: &PredicateSchema) -> Vec<String> {
+    content_words(p).iter().map(|w| stem(w)).collect()
+}
+
+/// [`predicate_words`] before stemming, as a person would say them.
+fn content_words(p: &PredicateSchema) -> Vec<String> {
     let mut words = name_words(&p.name);
     let prefix = match p.role {
         PredicateRole::Goal => &["goal"][..],
@@ -339,7 +344,35 @@ fn predicate_words(p: &PredicateSchema) -> Vec<String> {
     if words.len() > 1 && words[0] == "goal" {
         words.remove(0); // "SubgoalGoal…" is unusual, but harmless
     }
-    words.iter().map(|w| stem(w)).collect()
+    words
+}
+
+/// Longest [`recognition_hint`], in bytes. whisper.cpp keeps at most about 224 prompt tokens.
+pub const MAX_HINT: usize = 400;
+
+/// A hint for the speech recognizer, as a short sentence of what the user is likely to say:
+/// Sigma's command words, then the user's taught phrases and the engine's own predicates. It
+/// biases recognition towards them (whisper.cpp's initial prompt), so "stop" or "mount the NAS"
+/// are heard as such. Never longer than [`MAX_HINT`].
+pub fn recognition_hint(predicates: &[PredicateSchema], phrases: &PhraseBook) -> String {
+    const SPOKEN_COMMANDS: &[&str] =
+        &["stop", "cancel", "undo that", "yes", "no", "think", "what next", "teach", "explain", "good", "bad"];
+    let mut seen = std::collections::BTreeSet::new();
+    let mut hint = String::from("Sigma");
+    let taught = phrases.phrases.keys().map(String::as_str).map(str::to_owned);
+    let named = targets(predicates).map(|p| content_words(p).join(" "));
+    for item in SPOKEN_COMMANDS.iter().map(|c| c.to_string()).chain(taught).chain(named) {
+        if item.is_empty() || !seen.insert(item.clone()) {
+            continue;
+        }
+        if hint.len() + item.len() + 3 > MAX_HINT {
+            break;
+        }
+        hint.push_str(", ");
+        hint.push_str(&item);
+    }
+    hint.push('.');
+    hint
 }
 
 /// Similarity of two stems in [0, 1]: equal, prefix of each other, or few edits apart.

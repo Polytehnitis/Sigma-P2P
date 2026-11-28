@@ -209,3 +209,25 @@ fn taught_phrases_persist_and_sync_to_paired_devices() {
     pc.merge_sync_state(phone_id, phone.export_sync_state().unwrap()).unwrap();
     assert!(pc.load_phrases().unwrap().phrases.is_empty());
 }
+
+#[test]
+fn recognition_hint_names_commands_phrases_and_predicates() {
+    let mut book = PhraseBook::default();
+    book.teach("water the ferns", Intent::SetGoal("GoalWaterPlants".into())).unwrap();
+    let hint = crate::language::recognition_hint(&preds(), &book);
+    assert!(hint.starts_with("Sigma, stop, cancel"), "{hint}");
+    assert!(hint.contains("water the ferns"), "{hint}");
+    assert!(hint.contains("mount nas"), "{hint}");
+    assert!(hint.contains("water plants"), "{hint}");
+    // Actions are never said as goals or observations.
+    assert!(!hint.contains("delete backups"), "{hint}");
+    assert!(hint.ends_with('.'));
+}
+
+#[test]
+fn recognition_hint_stays_short() {
+    let many: Vec<_> = (0..500).map(|i| PredicateSchema::binary(&format!("GoalTask{i}Number{i}"), Goal)).collect();
+    let hint = crate::language::recognition_hint(&many, &PhraseBook::default());
+    assert!(hint.len() <= crate::language::MAX_HINT, "{}", hint.len());
+    assert!(hint.contains("stop"));
+}

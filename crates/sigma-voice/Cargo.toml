@@ -1,0 +1,10 @@
+[package]
+name = "sigma-voice"
+description = "On-device speech recognition for Sigma (whisper.cpp)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+whisper-rs = "0.16"
+anyhow.workspace = true

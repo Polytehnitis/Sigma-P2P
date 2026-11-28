@@ -146,16 +146,20 @@ void main() {
 
   test('the speech model is pinned and not installed until verified', () async {
     final dir = await Directory.systemTemp.createTemp('sigma-speech');
-    final store = SpeechModelStore(dir);
+    final store = SpeechModelStore(dir, spec: SpeechModelSpec.desktop);
     expect(store.installed, isFalse);
-    expect(SpeechModelSpec.english.url, startsWith('https://'));
-    expect(SpeechModelSpec.english.archiveSha256, hasLength(64));
-    expect(SpeechModelSpec.english.files.keys, {
-      'encoder',
-      'decoder',
-      'joiner',
-      'tokens',
-    });
-    expect(store.path('tokens'), endsWith('/tokens.txt'));
+    for (final spec in [SpeechModelSpec.desktop, SpeechModelSpec.mobile]) {
+      expect(
+        spec.url,
+        startsWith('https://huggingface.co/ggerganov/whisper.cpp/'),
+      );
+      expect(spec.url, endsWith('/${spec.file}'));
+      expect(spec.sha256, matches(RegExp(r'^[0-9a-f]{64}$')));
+      expect(spec.bytes, greaterThan(10 * 1000 * 1000));
+    }
+    expect(store.file.path, endsWith('/ggml-small.en-q5_1.bin'));
+    // A partial download is not a model.
+    File('${store.file.path}.part').writeAsStringSync('half');
+    expect(store.installed, isFalse);
   });
 }

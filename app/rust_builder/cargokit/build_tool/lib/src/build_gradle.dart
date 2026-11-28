@@ -50,6 +50,34 @@ class BuildGradle {
           File(lib.path).copySync(path.join(outputDir, lib.finalFileName));
         }
       }
+      _copyCxxRuntime(target, outputDir);
     }
+  }
+
+  /// Sigma: whisper.cpp (in the Rust library) links the NDK's shared C++ runtime, which
+  /// Android does not provide, so it ships next to the library.
+  void _copyCxxRuntime(Target target, String outputDir) {
+    final triple = switch (target.android) {
+      'arm64-v8a' => 'aarch64-linux-android',
+      'armeabi-v7a' => 'arm-linux-androideabi',
+      'x86_64' => 'x86_64-linux-android',
+      'x86' => 'i686-linux-android',
+      _ => null,
+    };
+    if (triple == null) return;
+    final prebuilt = Directory(path.join(Environment.sdkPath, 'ndk',
+        Environment.ndkVersion, 'toolchains', 'llvm', 'prebuilt'));
+    if (!prebuilt.existsSync()) {
+      throw Exception('Android NDK not found at ${prebuilt.path}');
+    }
+    for (final host in prebuilt.listSync().whereType<Directory>()) {
+      final lib = File(path.join(
+          host.path, 'sysroot', 'usr', 'lib', triple, 'libc++_shared.so'));
+      if (lib.existsSync()) {
+        lib.copySync(path.join(outputDir, 'libc++_shared.so'));
+        return;
+      }
+    }
+    throw Exception('libc++_shared.so for $triple not found in ${prebuilt.path}');
   }
 }

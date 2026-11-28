@@ -29,6 +29,14 @@ android {
         versionName = flutter.versionName
     }
 
+    // whisper.cpp needs the NDK's libc++_shared.so (cargokit ships it with the Rust library).
+    // Keep one copy if a plugin ships its own too.
+    packaging {
+        jniLibs {
+            pickFirsts += "**/libc++_shared.so"
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.
