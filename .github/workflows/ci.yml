@@ -111,6 +111,12 @@ jobs:
           echo "CXX=clang-cl" >> "$GITHUB_ENV"
       - if: matrix.cc == 'clang-cl'
         uses: ilammy/msvc-dev-cmd@v1
+      - if: runner.os == 'Windows'
+        name: Show how whisper.cpp is compiled
+        shell: bash
+        run: |
+          touch "$(ls -d ~/.cargo/registry/src/*/whisper-rs-sys-*/build.rs | head -1)"
+          cargo build -p sigma-voice --release -vv 2>&1 | grep -iE "CMAKE_BUILD_TYPE|_FLAGS|/O[d12x]|-O[0-3]|ggml-cpu.c" | head -40 || true
       - run: cargo test -p sigma-voice --release -- --include-ignored --nocapture --test-threads=1
         env:
           SIGMA_WHISPER_BENCH: "1"
