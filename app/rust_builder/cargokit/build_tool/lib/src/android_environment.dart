@@ -150,7 +150,15 @@ class AndroidEnvironment {
     final toolTempDir =
         Platform.environment['CARGOKIT_TOOL_TEMP_DIR'] ?? targetTempDir;
 
+    // Sigma: whisper-rs-sys runs bindgen, which must parse whisper.cpp's headers for the
+    // Android target (32-bit ARM has other struct layouts than the build machine).
+    final bindgenKey =
+        'BINDGEN_EXTRA_CLANG_ARGS_${target.rust.replaceAll('-', '_')}';
+    final sysroot = path.join(toolchainPath, '..', 'sysroot');
+    final bindgenValue = '$targetArg --sysroot=$sysroot';
+
     return {
+      bindgenKey: bindgenValue,
       arKey: arValue,
       ccKey: ccValue,
       cfFlagsKey: cFlagsValue,
